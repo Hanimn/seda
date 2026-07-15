@@ -1,0 +1,99 @@
+# Local Flow — example configuration
+#
+# Copy this file to your platform's config location (see `local-flow config
+# path`) or pass it with `local-flow run --config /path/to/config.toml`.
+# All values below are the built-in defaults; edit only what you need.
+#
+# Privacy note: the defaults are deliberately conservative. Cleanup is off,
+# transcript logging is off, and debug-audio retention is off. Nothing leaves
+# your machine.
+
+[app]
+# Pipeline mode: "literal" (no cleanup), "standard", or "polished".
+mode = "standard"
+log_level = "INFO"
+# PRIVACY: keep false. When true, transcript text is written to logs.
+log_transcripts = false
+# PRIVACY: keep false. When true, recorded audio is written to disk.
+retain_debug_audio = false
+debug_audio_directory = ""
+notify_on_ready = true
+
+[hotkeys]
+# pynput-style hotkey strings, e.g. "<ctrl>+<alt>+space".
+push_to_talk = "<ctrl>+<alt>+space"
+cancel = "<esc>"
+toggle_mode = "<ctrl>+<alt>+m"
+
+[audio]
+device = ""                      # "" = system default input device
+sample_rate = 16000              # 8000/16000/22050/24000/44100/48000
+channels = 1
+minimum_duration_ms = 250        # recordings shorter than this are rejected
+maximum_duration_seconds = 180   # recordings are capped at this length
+trim_silence = true
+vad_backend = "energy"           # "energy", "silero", or "none"
+vad_threshold = 0.015
+leading_padding_ms = 150
+trailing_padding_ms = 300
+
+[transcription]
+backend = "faster-whisper"
+model = "small.en"
+model_path = ""                  # explicit local model path (overrides `model`)
+device = "auto"                  # "auto", "cpu", or "cuda"
+compute_type = "auto"
+language = "en"
+beam_size = 5
+temperature = 0.0
+condition_on_previous_text = false
+initial_prompt = ""
+download_root = ""
+
+[text]
+spoken_commands_enabled = true
+remove_fillers_in_standard_mode = false
+custom_vocabulary = [
+  "Claude Code",
+  "TypeScript",
+  "PostgreSQL",
+  "middleware.ts",
+]
+
+[cleanup]
+# PRIVACY: keep false. When true, transcripts are sent to a local LLM for
+# cleanup. Off by default so the pipeline stays fully deterministic.
+enabled = false
+provider = "ollama"              # "ollama" or "noop"
+mode = "standard"                # "standard" or "polished"
+timeout_seconds = 15.0
+fallback_to_raw_transcript = true
+# SAFETY: keep false. When false, only loopback cleanup endpoints are allowed,
+# so transcripts cannot be sent off-machine. Set true only to use a remote
+# endpoint you control and trust.
+allow_remote_endpoint = false
+
+[cleanup.ollama]
+base_url = "http://127.0.0.1:11434"   # loopback only unless allow_remote_endpoint
+model = "qwen2.5:3b"
+temperature = 0.0
+keep_alive = "10m"
+
+[paste]
+method = "clipboard"             # "clipboard" or "type"
+terminal_shortcut = "auto"
+restore_clipboard = true
+restore_delay_ms = 750
+paste_delay_ms = 100
+append_space = false
+# SAFETY: must be false. Automatic submission (pressing Enter) is not
+# implemented in this release; a config that sets this to true is rejected.
+auto_submit = false
+
+[notifications]
+sound_enabled = true
+console_enabled = true
+recording_start_sound = ""
+recording_stop_sound = ""
+success_sound = ""
+error_sound = ""

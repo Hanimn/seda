@@ -1,0 +1,108 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "local-flow"
+version = "0.0.0"
+description = "Local-first, system-wide voice dictation optimized for dictating prompts into terminal applications."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Local Flow contributors" }]
+keywords = ["dictation", "speech-to-text", "local", "privacy", "voice"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+# Core runtime dependencies. Backend-specific and native-heavy packages
+# (faster-whisper, silero-vad) live in optional groups below so that the
+# base install stays light and importable in headless CI.
+dependencies = [
+  "numpy>=1.24,<3",
+  "sounddevice>=0.4,<1",
+  "pynput>=1.7,<2",
+  "pyperclip>=1.8,<2",
+  "pydantic>=2.6,<3",
+  "platformdirs>=4,<5",
+  "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.0,<2"]
+vad = ["silero-vad>=5,<6"]
+# HTTP client for the optional local-LLM cleanup provider (Phase 6). Kept out
+# of the base install so a plain dictation setup pulls no HTTP stack.
+cleanup = ["httpx>=0.27,<1"]
+dev = [
+  "pytest>=8,<9",
+  "pytest-cov>=5,<7",
+  "ruff>=0.6,<1",
+  "mypy>=1.10,<2",
+]
+
+[project.scripts]
+local-flow = "local_flow.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/Hanimn/seda"
+Repository = "https://github.com/Hanimn/seda"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/local_flow"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# A pragmatic, mostly-default rule set. E/F (pyflakes/pycodestyle),
+# I (isort), UP (pyupgrade), B (bugbear), SIM (simplify).
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Typer's design puts typer.Option()/typer.Argument() calls in parameter
+# defaults; these are safe factories, not the mutable-default footgun B008
+# guards against.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use assert freely and long descriptive names.
+"tests/**" = ["B011"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["local_flow"]
+mypy_path = "src"
+strict = true
+warn_unused_configs = true
+warn_return_any = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# Native / optional third-party libraries without bundled type stubs.
+module = [
+  "sounddevice.*",
+  "pynput.*",
+  "pyperclip.*",
+  "faster_whisper.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "integration: tests that require real hardware, models, or network (deselect with -m 'not integration').",
+]

@@ -11,3 +11,7 @@ The five canonical triage roles, each label string equal to its name. See `docs/
 ### Domain docs
 
 Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Project board
+
+Issues are on a GitHub Project (Kanban + roadmap). When `/implement` **starts** a ticket, set its project card to **In Progress** before doing the work; closing the issue at the end lets the "Item closed" workflow move the card to **Done** automatically (never set Done by hand). See `docs/agents/project-board.md`.
