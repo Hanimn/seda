@@ -80,7 +80,9 @@ extend-immutable-calls = ["typer.Option", "typer.Argument"]
 "tests/**" = ["B011"]
 
 [tool.mypy]
-python_version = "3.11"
+# No python_version pin: mypy infers it from the interpreter it runs under, so
+# each CI matrix job (3.11, 3.12) type-checks against its own version. Pinning
+# 3.11 made the 3.12 job reject PEP 695 `type` statements in newer numpy stubs.
 packages = ["local_flow"]
 mypy_path = "src"
 strict = true
