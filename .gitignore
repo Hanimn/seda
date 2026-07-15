@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Local Flow — never commit user data / machine artifacts (see IMPLEMENTATION_PLAN.md §21, §38)
+*.wav
+*.flac
+*.mp3
+models/
+*.bin
+*.pt
+*.gguf
+config.toml
+*.log
+.scratch/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
