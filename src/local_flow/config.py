@@ -241,6 +241,17 @@ class Config(_Section):
             data["app"]["debug_audio_directory"] = "<set; hidden>"
         return data
 
+    def with_mode(self, mode: str) -> Config:
+        """Return a copy with ``app.mode`` overridden, re-validated.
+
+        Goes through full validation (unlike ``model_copy(update=...)``), so an
+        invalid mode raises :class:`ConfigError` with a readable message rather
+        than being silently accepted.
+        """
+        data = self.model_dump(mode="python")
+        data["app"]["mode"] = mode
+        return load_config_from_dict(data)
+
 
 # --- Validation helpers -----------------------------------------------------
 

@@ -4,9 +4,10 @@ Local-first, system-wide voice dictation — optimized for dictating prompts int
 Claude Code and other terminal applications. Hold a global push-to-talk hotkey,
 speak, release, and get **editable** text at your cursor.
 
-> **Status:** early development. This repository currently contains the
-> **Phase 0** skeleton — configuration, logging, diagnostics, and the CLI. No
-> audio capture, transcription, or model code is implemented yet. See
+> **Status:** early development. Implemented so far: the project skeleton
+> (configuration, logging, diagnostics, CLI) and **file transcription** via a
+> local `faster-whisper` model (`local-flow transcribe FILE`). Microphone
+> capture, hotkeys, and paste are not implemented yet. See
 > [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the full roadmap.
 
 ## Safety and privacy
@@ -50,7 +51,7 @@ uv run local-flow models download small.en   # (available from Phase 1)
 
 ## CLI
 
-Phase 0 implements the non-hardware commands:
+Non-hardware commands:
 
 ```bash
 local-flow version              # print the version
@@ -62,9 +63,20 @@ local-flow doctor               # environment + config diagnostics
 local-flow doctor --json        # machine-readable diagnostics
 ```
 
-Commands that need audio, models, or global hotkeys (`run`, `transcribe`,
-`devices`, `test-mic`, `models`) are listed in `--help` but report that they
-are not yet implemented.
+File transcription (Phase 1) — needs the `whisper` extra and a local model:
+
+```bash
+local-flow models recommend         # list recommended models
+local-flow models download small.en # fetch a model into the local cache
+local-flow models list-local        # list known model identifiers
+local-flow transcribe recording.wav --stdout   # transcribe a PCM WAV file
+local-flow transcribe recording.wav --copy      # copy the transcript to the clipboard
+local-flow transcribe recording.wav --offline   # require a local model; never download
+```
+
+Commands that need a microphone or global hotkeys (`run`, `devices`,
+`test-mic`) are listed in `--help` but report that they are not yet
+implemented.
 
 ### Exit codes
 

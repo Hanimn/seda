@@ -24,6 +24,8 @@ from local_flow.config import (
     render_toml,
 )
 from local_flow.diagnostics import Status, run_checks, worst_status
+from local_flow.errors import LocalFlowError, ModelUnavailableError
+from local_flow.logging_config import configure_logging
 
 
 class ExitCode(IntEnum):
@@ -48,6 +50,8 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="Inspect and manage configuration.", no_args_is_help=True)
 app.add_typer(config_app, name="config")
+models_app = typer.Typer(help="Inspect and manage transcription models.", no_args_is_help=True)
+app.add_typer(models_app, name="models")
 
 
 def _err(message: str) -> None:
@@ -58,6 +62,16 @@ def _not_implemented(command: str, code: ExitCode) -> None:
     """Report a command that is declared but not implemented in this phase."""
     _err(f"'{command}' is not implemented yet (Phase 0 provides the skeleton only).")
     raise typer.Exit(code=int(code))
+
+
+def _require_faster_whisper_utils() -> object:
+    """Import ``faster_whisper.utils`` or exit with a readable MODEL error."""
+    try:
+        from faster_whisper import utils
+    except ImportError:
+        _err("faster-whisper is not installed; install the 'whisper' extra")
+        raise typer.Exit(code=int(ExitCode.MODEL)) from None
+    return utils
 
 
 # --- Top-level commands -----------------------------------------------------
@@ -173,9 +187,83 @@ def run() -> None:
 
 
 @app.command()
-def transcribe(file: Path = typer.Argument(..., help="Audio file to transcribe.")) -> None:
-    """Transcribe an audio file (not implemented in Phase 0)."""
-    _not_implemented("transcribe", ExitCode.TRANSCRIPTION)
+def transcribe(
+    file: Path = typer.Argument(..., help="Audio file (PCM WAV) to transcribe."),
+    stdout: bool = typer.Option(False, "--stdout", help="Print the transcript to stdout."),
+    copy: bool = typer.Option(False, "--copy", help="Copy the transcript to the clipboard."),
+    mode: str | None = typer.Option(
+        None, "--mode", help="Override the pipeline mode (e.g. 'literal')."
+    ),
+    offline: bool = typer.Option(
+        False, "--offline", help="Refuse model downloads; require a local model."
+    ),
+    config: Path | None = typer.Option(None, "--config", help="Path to a config file."),
+) -> None:
+    """Transcribe an audio file with a local model and emit the transcript."""
+    # Deferred imports keep `--help` and the config/doctor commands from paying
+    # for numpy/backend import cost on every invocation.
+    from local_flow.audio.loading import load_wav
+    from local_flow.transcription.factory import create_backend
+
+    try:
+        loaded_config = load_config(config)
+    except ConfigError as exc:
+        _err(str(exc))
+        raise typer.Exit(code=int(ExitCode.CONFIG)) from exc
+
+    if mode is not None:
+        try:
+            loaded_config = loaded_config.with_mode(mode)
+        except ConfigError as exc:
+            _err(str(exc))
+            raise typer.Exit(code=int(ExitCode.CONFIG)) from exc
+
+    logger = configure_logging(loaded_config)
+
+    try:
+        audio = load_wav(file)
+    except LocalFlowError as exc:
+        _err(str(exc))
+        raise typer.Exit(code=int(ExitCode.AUDIO)) from exc
+
+    backend = create_backend(loaded_config, offline=offline)
+    try:
+        backend.load()
+        result = backend.transcribe(audio.samples, audio.sample_rate)
+    except ModelUnavailableError as exc:
+        _err(str(exc))
+        raise typer.Exit(code=int(ExitCode.MODEL)) from exc
+    except LocalFlowError as exc:
+        _err(str(exc))
+        raise typer.Exit(code=int(ExitCode.TRANSCRIPTION)) from exc
+    finally:
+        backend.close()
+
+    # Timing diagnostics — metadata only, never the transcript text (§21).
+    logger.info(
+        "transcribed audio: duration=%.2fs processing=%.2fs chars=%d language=%s",
+        result.duration_seconds,
+        result.processing_seconds,
+        len(result.text),
+        result.language,
+    )
+
+    if copy:
+        _copy_to_clipboard(result.text)
+    # Default to stdout when no explicit sink is requested, so the command is
+    # useful on its own.
+    if stdout or not copy:
+        typer.echo(result.text)
+
+
+def _copy_to_clipboard(text: str) -> None:
+    """Copy ``text`` to the clipboard, warning (not failing) if unavailable."""
+    try:
+        import pyperclip
+
+        pyperclip.copy(text)
+    except Exception as exc:  # noqa: BLE001 - clipboard is best-effort here
+        _err(f"could not copy to clipboard: {exc}")
 
 
 @app.command()
@@ -188,6 +276,75 @@ def devices() -> None:
 def test_mic() -> None:
     """Record a short sample to test the microphone (not implemented in Phase 0)."""
     _not_implemented("test-mic", ExitCode.AUDIO)
+
+
+# --- models sub-commands ----------------------------------------------------
+
+# A small, conservative recommendation table. English-only "small.en" is a good
+# latency/accuracy default for dictation; see IMPLEMENTATION_PLAN.md §5.
+_RECOMMENDED_MODELS = [
+    ("small.en", "English-only default: good accuracy at low latency"),
+    ("base.en", "English-only, faster and lighter than small.en"),
+    ("medium.en", "English-only, higher accuracy, more RAM/compute"),
+    ("large-v3", "Multilingual, highest accuracy, heaviest"),
+]
+
+
+@models_app.command("recommend")
+def models_recommend() -> None:
+    """Print recommended transcription models."""
+    for name, description in _RECOMMENDED_MODELS:
+        typer.echo(f"{name}\t{description}")
+
+
+@models_app.command("list-local")
+def models_list_local(
+    config: Path | None = typer.Option(None, "--config", help="Path to a config file."),
+) -> None:
+    """List the model identifiers the backend recognizes (no network access).
+
+    Note: this lists the known/available model identifiers, not a scan of the
+    on-disk cache. True cache enumeration is a later refinement.
+    """
+    utils = _require_faster_whisper_utils()
+    for name in utils.available_models():  # type: ignore[attr-defined]
+        typer.echo(name)
+
+
+@models_app.command("download")
+def models_download(
+    model: str = typer.Argument(..., help="Model name to download (e.g. small.en)."),
+    offline: bool = typer.Option(
+        False, "--offline", help="Refuse to download (fails if not already local)."
+    ),
+    config: Path | None = typer.Option(None, "--config", help="Path to a config file."),
+) -> None:
+    """Download a transcription model to the local cache."""
+    if offline:
+        _err("--offline forbids downloads; a missing model cannot be fetched")
+        raise typer.Exit(code=int(ExitCode.MODEL))
+
+    utils = _require_faster_whisper_utils()
+
+    loaded_config = _safe_load(config)
+    download_root = loaded_config.transcription.download_root or None
+    try:
+        path = utils.download_model(  # type: ignore[attr-defined]
+            model, output_dir=download_root, local_files_only=False
+        )
+    except Exception as exc:  # noqa: BLE001 - surfaced as a clean CLI error
+        _err(f"could not download model '{model}': {exc}")
+        raise typer.Exit(code=int(ExitCode.MODEL)) from exc
+    typer.echo(f"model '{model}' available at {path}")
+
+
+def _safe_load(config: Path | None) -> Config:
+    """Load config or exit with a readable config error (exit code 2)."""
+    try:
+        return load_config(config)
+    except ConfigError as exc:
+        _err(str(exc))
+        raise typer.Exit(code=int(ExitCode.CONFIG)) from exc
 
 
 if __name__ == "__main__":

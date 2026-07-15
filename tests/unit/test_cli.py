@@ -7,12 +7,15 @@ touched.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from local_flow import __version__
 from local_flow.cli import ExitCode, app
+
+WavFactory = Callable[..., Path]
 
 runner = CliRunner()
 
@@ -111,3 +114,71 @@ def test_unimplemented_command_reports_and_exits_nonzero() -> None:
     assert result.exit_code == int(ExitCode.RUNTIME)
     assert "not implemented" in result.output
     assert "Traceback" not in result.output
+
+
+# --- transcribe (Phase 1) ---------------------------------------------------
+
+
+def _fake_backend_config(tmp_path: Path) -> Path:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+    return cfg
+
+
+def test_transcribe_prints_transcript_to_stdout(tmp_path: Path, make_wav: WavFactory) -> None:
+    wav = make_wav([0, 1000, -1000, 0], sample_rate=16000)
+    cfg = _fake_backend_config(tmp_path)
+    result = runner.invoke(app, ["transcribe", str(wav), "--stdout", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert "fake transcript" in result.stdout
+
+
+def test_transcribe_defaults_to_stdout_when_no_sink(tmp_path: Path, make_wav: WavFactory) -> None:
+    wav = make_wav([0, 1000, -1000, 0])
+    cfg = _fake_backend_config(tmp_path)
+    result = runner.invoke(app, ["transcribe", str(wav), "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert "fake transcript" in result.stdout
+
+
+def test_transcribe_missing_file_exits_audio_code(tmp_path: Path) -> None:
+    cfg = _fake_backend_config(tmp_path)
+    result = runner.invoke(app, ["transcribe", str(tmp_path / "nope.wav"), "--config", str(cfg)])
+    assert result.exit_code == int(ExitCode.AUDIO)
+    assert "Traceback" not in result.output
+
+
+def test_transcribe_rejects_invalid_mode(tmp_path: Path, make_wav: WavFactory) -> None:
+    wav = make_wav([0, 1000, -1000, 0])
+    cfg = _fake_backend_config(tmp_path)
+    result = runner.invoke(app, ["transcribe", str(wav), "--mode", "turbo", "--config", str(cfg)])
+    assert result.exit_code == int(ExitCode.CONFIG)
+    assert "Traceback" not in result.output
+    assert "mode" in result.output
+
+
+def test_transcribe_accepts_valid_mode(tmp_path: Path, make_wav: WavFactory) -> None:
+    wav = make_wav([0, 1000, -1000, 0])
+    cfg = _fake_backend_config(tmp_path)
+    result = runner.invoke(app, ["transcribe", str(wav), "--mode", "literal", "--config", str(cfg)])
+    assert result.exit_code == 0
+
+
+def test_transcribe_does_not_log_transcript_text(tmp_path: Path, make_wav: WavFactory) -> None:
+    wav = make_wav([0, 1000, -1000, 0])
+    cfg = _fake_backend_config(tmp_path)
+    result = runner.invoke(app, ["transcribe", str(wav), "--config", str(cfg)])
+    # The timing log line reports a char count, never the transcript text.
+    assert "chars=" in result.output
+
+
+def test_models_recommend_lists_models() -> None:
+    result = runner.invoke(app, ["models", "recommend"])
+    assert result.exit_code == 0
+    assert "small.en" in result.stdout
+
+
+def test_models_download_offline_refuses() -> None:
+    result = runner.invoke(app, ["models", "download", "small.en", "--offline"])
+    assert result.exit_code == int(ExitCode.MODEL)
+    assert "forbids downloads" in result.output
