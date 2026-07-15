@@ -14,4 +14,4 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agent
 
 ### Project board
 
-Issues are on a GitHub Project (Kanban + roadmap). When `/implement` **starts** a ticket, set its project card to **In Progress** before doing the work; closing the issue at the end lets the "Item closed" workflow move the card to **Done** automatically (never set Done by hand). See `docs/agents/project-board.md`.
+Issues are on a GitHub Project (Kanban + roadmap). When `/implement` **starts** a ticket, set its project card to **In Progress** before doing the work. At the **end**, before closing: tick the acceptance-criteria checkboxes you verified in the issue body, then close the issue by hand (which lets the "Item closed" workflow move the card to **Done** — never set Done by hand). Do **not** put `Closes #N` in the commit, or the push would auto-close the issue before the boxes are ticked. See `docs/agents/project-board.md`.
