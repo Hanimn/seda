@@ -232,9 +232,7 @@ class TestMultilinePolicy:
 class TestAppendSpace:
     def test_trailing_space_appended_when_enabled(self) -> None:
         cb = FakeClipboard()
-        inserter, _, _ = _inserter(
-            clipboard=cb, append_space=True, restore_clipboard=False
-        )
+        inserter, _, _ = _inserter(clipboard=cb, append_space=True, restore_clipboard=False)
         inserter.insert("hello")
         assert cb.read_text() == "hello "
 
@@ -265,9 +263,7 @@ class TestPasteFailure:
     def test_paste_failure_leaves_transcript_on_clipboard(self) -> None:
         cb = FakeClipboard()
         cb.write_text("prior clipboard")
-        inserter, _, _ = _inserter(
-            clipboard=cb, paste_backend=FakePasteBackend(fail=True)
-        )
+        inserter, _, _ = _inserter(clipboard=cb, paste_backend=FakePasteBackend(fail=True))
         result = inserter.insert("dictated text")
         assert result.pasted is False
         # Failure fallback: transcript stays on clipboard, prior NOT restored.
@@ -378,8 +374,7 @@ class TestSelectShortcut:
         )
         assert select_shortcut(cfg, platform="darwin", active_app="iTerm2") == "cmd+v"
         assert (
-            select_shortcut(cfg, platform="win32", active_app="Windows Terminal")
-            == "ctrl+shift+v"
+            select_shortcut(cfg, platform="win32", active_app="Windows Terminal") == "ctrl+shift+v"
         )
 
     def test_no_match_falls_back_to_platform(self) -> None:
@@ -397,5 +392,3 @@ class TestSelectShortcut:
         from local_flow.config import PasteConfig
 
         assert select_shortcut(PasteConfig(), platform="darwin", active_app=None) == "cmd+v"
-
-

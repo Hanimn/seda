@@ -8,15 +8,14 @@ import pytest
 
 from local_flow.text.technical_tokens import (
     ProtectionError,
-    TokenRegistry,
     protect,
     restore,
 )
 
-
 # ---------------------------------------------------------------------------
 # Basic protect / restore round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestRoundTrip:
     def test_plain_text_unchanged(self) -> None:
@@ -44,6 +43,7 @@ class TestRoundTrip:
 # Placeholder format
 # ---------------------------------------------------------------------------
 
+
 class TestPlaceholderFormat:
     def test_placeholder_is_opaque(self) -> None:
         text = "src/auth/middleware.ts"
@@ -70,6 +70,7 @@ class TestPlaceholderFormat:
 # ---------------------------------------------------------------------------
 # What gets protected — canonical cases from the spec
 # ---------------------------------------------------------------------------
+
 
 class TestProtectedPatterns:
     @pytest.mark.parametrize(
@@ -129,6 +130,7 @@ class TestProtectedPatterns:
 # TokenRegistry integrity checks
 # ---------------------------------------------------------------------------
 
+
 class TestRegistryIntegrity:
     def test_missing_placeholder_detected(self) -> None:
         text = "src/auth/middleware.ts"
@@ -173,6 +175,7 @@ class TestRegistryIntegrity:
 # Multiple tokens in one string
 # ---------------------------------------------------------------------------
 
+
 class TestMultipleTokens:
     def test_two_paths_protected(self) -> None:
         text = "compare src/a.ts with src/b.ts"
@@ -187,9 +190,6 @@ class TestMultipleTokens:
         assert restore(protected, registry) == text
 
     def test_many_tokens(self) -> None:
-        text = (
-            "run npm run test in src/app and check NODE_ENV "
-            "with refreshToken at v2.1.4"
-        )
+        text = "run npm run test in src/app and check NODE_ENV with refreshToken at v2.1.4"
         protected, registry = protect(text)
         assert restore(protected, registry) == text

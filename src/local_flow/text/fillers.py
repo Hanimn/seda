@@ -31,9 +31,7 @@ _FILLER_PHRASES: list[str] = [
 # Build a single regex that matches any filler phrase at a whole-word boundary.
 # We deliberately exclude "like" per spec.
 _FILLER_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])("
-    + "|".join(re.escape(p) for p in _FILLER_PHRASES)
-    + r")(?![A-Za-z0-9_])",
+    r"(?<![A-Za-z0-9_])(" + "|".join(re.escape(p) for p in _FILLER_PHRASES) + r")(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 
@@ -73,6 +71,7 @@ def remove_fillers(
 # ---------------------------------------------------------------------------
 # Core removal logic
 # ---------------------------------------------------------------------------
+
 
 def _remove_standalone_fillers(text: str) -> str:
     """Remove filler phrases that are not inside placeholders or identifiers."""

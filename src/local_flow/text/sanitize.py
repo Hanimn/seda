@@ -5,9 +5,7 @@ from __future__ import annotations
 import re
 
 # C0 characters that are stripped (not null — that is rejected; not tab/LF/CR — those are handled).
-_STRIP_C0 = re.compile(
-    r"[\x01-\x08\x0b\x0c\x0e-\x1f]"
-)
+_STRIP_C0 = re.compile(r"[\x01-\x08\x0b\x0c\x0e-\x1f]")
 
 # C1 range U+0080–U+009F
 _STRIP_C1 = re.compile(r"[\x80-\x9f]")
@@ -31,9 +29,7 @@ def sanitize(text: str) -> str:
     are preserved.
     """
     if "\x00" in text:
-        raise InvalidTranscriptError(
-            "Transcript contains a null byte (U+0000); input rejected."
-        )
+        raise InvalidTranscriptError("Transcript contains a null byte (U+0000); input rejected.")
 
     # Normalize line endings before stripping CR so \r\n becomes \n not \n\n.
     text = text.replace("\r\n", "\n").replace("\r", "\n")

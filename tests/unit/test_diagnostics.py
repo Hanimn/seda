@@ -280,4 +280,3 @@ def test_check_details_never_include_env_values(
     results = run_checks(str(tmp_path / "none.toml"))
     for r in results:
         assert "do-not-log-this" not in r.detail
-

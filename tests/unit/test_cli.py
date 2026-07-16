@@ -117,9 +117,7 @@ def test_run_command_help_works() -> None:
     assert "dictation" in result.output.lower() or "run" in result.output.lower()
 
 
-def test_run_no_paste_flag_sets_copy_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_no_paste_flag_sets_copy_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`--no-paste` runs the controller in copy-only mode without pasting."""
     import local_flow.app as app_module
 

@@ -10,10 +10,10 @@ from local_flow.text.pipeline import (
     process_transcript,
 )
 
-
 # ---------------------------------------------------------------------------
 # Control-character sanitization is applied first
 # ---------------------------------------------------------------------------
+
 
 class TestSanitizationApplied:
     def test_crlf_normalized(self) -> None:
@@ -22,6 +22,7 @@ class TestSanitizationApplied:
 
     def test_null_byte_raises(self) -> None:
         from local_flow.text.sanitize import InvalidTranscriptError
+
         with pytest.raises(InvalidTranscriptError):
             process_transcript("bad\x00input", mode="standard")
 
@@ -34,6 +35,7 @@ class TestSanitizationApplied:
 # ---------------------------------------------------------------------------
 # Beginning-of-transcript mode commands
 # ---------------------------------------------------------------------------
+
 
 class TestModeCommands:
     def test_literal_mode_detected_and_stripped(self) -> None:
@@ -62,9 +64,7 @@ class TestModeCommands:
 
     def test_mode_command_only_at_start(self) -> None:
         # "literal mode" in the middle of a sentence must not trigger override.
-        result = process_transcript(
-            "please use literal mode for this", mode="standard"
-        )
+        result = process_transcript("please use literal mode for this", mode="standard")
         assert result.mode_override is None
         assert "literal mode" in result.text
 
@@ -78,6 +78,7 @@ class TestModeCommands:
 # Spoken commands applied
 # ---------------------------------------------------------------------------
 
+
 class TestSpokenCommandsApplied:
     def test_path_command(self) -> None:
         result = process_transcript(
@@ -90,7 +91,9 @@ class TestSpokenCommandsApplied:
         assert "\n" in result.text
 
     def test_symbol_prefix_forces_replacement(self) -> None:
-        result = process_transcript("symbol open brace key symbol colon val symbol close brace", mode="standard")
+        result = process_transcript(
+            "symbol open brace key symbol colon val symbol close brace", mode="standard"
+        )
         assert "{key:val}" in result.text
 
     def test_commands_disabled_when_flag_off(self) -> None:
@@ -105,18 +108,16 @@ class TestSpokenCommandsApplied:
 # Technical-token protection
 # ---------------------------------------------------------------------------
 
+
 class TestTokenProtection:
     def test_protected_tokens_survive_pipeline(self) -> None:
-        result = process_transcript(
-            "check src/auth/middleware.ts for bugs", mode="standard"
-        )
+        result = process_transcript("check src/auth/middleware.ts for bugs", mode="standard")
         assert "src/auth/middleware.ts" in result.text
 
     def test_placeholders_not_in_final_output(self) -> None:
         import re
-        result = process_transcript(
-            "check DATABASE_URL and refreshToken", mode="standard"
-        )
+
+        result = process_transcript("check DATABASE_URL and refreshToken", mode="standard")
         assert not re.search(r"__LF_[A-Z0-9]+_\d{4}__", result.text)
 
 
@@ -124,31 +125,27 @@ class TestTokenProtection:
 # Filler removal
 # ---------------------------------------------------------------------------
 
+
 class TestFillerRemoval:
     def test_fillers_removed_in_polished_mode(self) -> None:
-        result = process_transcript(
-            "um basically we should fix this", mode="polished"
-        )
+        result = process_transcript("um basically we should fix this", mode="polished")
         assert "um" not in result.text
         assert "basically" not in result.text
         assert "fix this" in result.text
 
     def test_fillers_kept_in_standard_mode(self) -> None:
-        result = process_transcript(
-            "um basically we should fix this", mode="standard"
-        )
+        result = process_transcript("um basically we should fix this", mode="standard")
         assert "um" in result.text
 
     def test_fillers_kept_in_literal_mode(self) -> None:
-        result = process_transcript(
-            "um basically fix this", mode="literal"
-        )
+        result = process_transcript("um basically fix this", mode="literal")
         assert "um" in result.text
 
 
 # ---------------------------------------------------------------------------
 # Final normalization
 # ---------------------------------------------------------------------------
+
 
 class TestFinalNormalization:
     def test_no_leading_trailing_spaces(self) -> None:
@@ -172,6 +169,7 @@ class TestFinalNormalization:
 # Literal mode bypasses spoken-command ambiguous replacements and fillers
 # ---------------------------------------------------------------------------
 
+
 class TestLiteralModeBehavior:
     def test_bare_ambiguous_commands_not_replaced_in_literal(self) -> None:
         # Literal mode preserves bare ambiguous words ("apply only explicitly
@@ -192,6 +190,7 @@ class TestLiteralModeBehavior:
 # ---------------------------------------------------------------------------
 # PipelineResult metadata
 # ---------------------------------------------------------------------------
+
 
 class TestPipelineResult:
     def test_returns_pipeline_result(self) -> None:
@@ -219,9 +218,7 @@ class TestFinalizeAfterCleanup:
     def test_protected_text_still_contains_placeholders(self) -> None:
         import re
 
-        result = process_transcript(
-            "check src/auth/middleware.ts for bugs", mode="standard"
-        )
+        result = process_transcript("check src/auth/middleware.ts for bugs", mode="standard")
         # The protected text handed to a cleanup provider must still carry the
         # opaque placeholders (the technical token is protected, not visible).
         assert re.search(r"__LF_[A-Z0-9]+_\d{4}__", result.protected_text)
@@ -230,13 +227,8 @@ class TestFinalizeAfterCleanup:
     def test_finalize_reproduces_pipeline_text(self) -> None:
         # Finalizing the untouched protected text must reproduce the same final
         # text process_transcript already returned (backward-compat contract).
-        result = process_transcript(
-            "check src/auth/middleware.ts for bugs", mode="standard"
-        )
-        assert (
-            finalize_after_cleanup(result.protected_text, result.token_registry)
-            == result.text
-        )
+        result = process_transcript("check src/auth/middleware.ts for bugs", mode="standard")
+        assert finalize_after_cleanup(result.protected_text, result.token_registry) == result.text
 
     def test_finalize_restores_cleaned_text(self) -> None:
         result = process_transcript("look at README.md now", mode="standard")
@@ -255,11 +247,7 @@ class TestFinalizeAfterCleanup:
         if len(phs) < 2:
             pytest.skip("need at least 2 placeholders for reorder test")
         p0, p1 = phs[0], phs[1]
-        swapped = (
-            result.protected_text.replace(p0, "TEMP")
-            .replace(p1, p0)
-            .replace("TEMP", p1)
-        )
+        swapped = result.protected_text.replace(p0, "TEMP").replace(p1, p0).replace("TEMP", p1)
         with pytest.raises(ProtectionError):
             finalize_after_cleanup(swapped, result.token_registry)
 

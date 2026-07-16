@@ -24,6 +24,4 @@ def create_cleanup_provider(config: Config) -> CleanupProvider:
         return OllamaCleanupProvider(config.cleanup)
     if provider == "noop":
         return NoopCleanupProvider()
-    raise ConfigurationError(
-        f"unknown cleanup.provider '{provider}' (supported: ollama, noop)"
-    )
+    raise ConfigurationError(f"unknown cleanup.provider '{provider}' (supported: ollama, noop)")

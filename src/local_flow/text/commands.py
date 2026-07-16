@@ -25,48 +25,46 @@ from typing import Literal
 # ---------------------------------------------------------------------------
 _COMMAND_TABLE: list[tuple[str, str, bool]] = [
     # Unambiguous multi-word — always replaced
-    ("new paragraph",     "\n\n", False),
-    ("new line",          "\n",   False),
-    ("newline",           "\n",   False),
-    ("open parenthesis",  "(",    False),
-    ("close parenthesis", ")",    False),
-    ("open paren",        "(",    False),
-    ("close paren",       ")",    False),
-    ("open bracket",      "[",    False),
-    ("close bracket",     "]",    False),
-    ("open brace",        "{",    False),
-    ("close brace",       "}",    False),
-    ("question mark",     "?",    False),
-    ("exclamation mark",  "!",    False),
-    ("double quote",      '"',    False),
-    ("single quote",      "'",    False),
-    ("at sign",           "@",    False),
-    ("triple backtick",   "```",  False),
-    ("back tick",         "`",    False),
+    ("new paragraph", "\n\n", False),
+    ("new line", "\n", False),
+    ("newline", "\n", False),
+    ("open parenthesis", "(", False),
+    ("close parenthesis", ")", False),
+    ("open paren", "(", False),
+    ("close paren", ")", False),
+    ("open bracket", "[", False),
+    ("close bracket", "]", False),
+    ("open brace", "{", False),
+    ("close brace", "}", False),
+    ("question mark", "?", False),
+    ("exclamation mark", "!", False),
+    ("double quote", '"', False),
+    ("single quote", "'", False),
+    ("at sign", "@", False),
+    ("triple backtick", "```", False),
+    ("back tick", "`", False),
     # Ambiguous single-word — context-dependent in standard/polished mode
-    ("backtick",   "`",  True),
-    ("colon",      ":",  True),
-    ("semicolon",  ";",  True),
-    ("comma",      ",",  True),
-    ("period",     ".",  True),
-    ("dot",        ".",  True),
-    ("slash",      "/",  True),
-    ("backslash",  "\\", True),
-    ("underscore", "_",  True),
-    ("dash",       "-",  True),
-    ("hyphen",     "-",  True),
-    ("equals",     "=",  True),
-    ("plus",       "+",  True),
-    ("asterisk",   "*",  True),
-    ("hash",       "#",  True),
-    ("pipe",       "|",  True),
-    ("ampersand",  "&",  True),
-    ("tab",        "\t", True),
+    ("backtick", "`", True),
+    ("colon", ":", True),
+    ("semicolon", ";", True),
+    ("comma", ",", True),
+    ("period", ".", True),
+    ("dot", ".", True),
+    ("slash", "/", True),
+    ("backslash", "\\", True),
+    ("underscore", "_", True),
+    ("dash", "-", True),
+    ("hyphen", "-", True),
+    ("equals", "=", True),
+    ("plus", "+", True),
+    ("asterisk", "*", True),
+    ("hash", "#", True),
+    ("pipe", "|", True),
+    ("ampersand", "&", True),
+    ("tab", "\t", True),
 ]
 
-_COMMANDS: dict[str, tuple[str, bool]] = {
-    p: (r, a) for p, r, a in _COMMAND_TABLE
-}
+_COMMANDS: dict[str, tuple[str, bool]] = {p: (r, a) for p, r, a in _COMMAND_TABLE}
 # Longest phrase first (by word count, then length for tie-breaking).
 _SORTED_PHRASES = sorted(
     _COMMANDS,
@@ -77,17 +75,107 @@ _SYMBOL_PREFIX = "symbol"
 
 # Commands whose replacement should absorb surrounding spaces (path/code symbols).
 # When ``sticky=True`` the symbol attaches directly to adjacent tokens.
-_STICKY_REPLS: frozenset[str] = frozenset({
-    "/", "\\", ".", "_", "-", ":", "=", "+", "*", "@", "#", "|", "&",
-    "(", ")", "[", "]", "{", "}", '"', "'", "`", "```", ";", ",", "?", "!", "\t",
-})
+_STICKY_REPLS: frozenset[str] = frozenset(
+    {
+        "/",
+        "\\",
+        ".",
+        "_",
+        "-",
+        ":",
+        "=",
+        "+",
+        "*",
+        "@",
+        "#",
+        "|",
+        "&",
+        "(",
+        ")",
+        "[",
+        "]",
+        "{",
+        "}",
+        '"',
+        "'",
+        "`",
+        "```",
+        ";",
+        ",",
+        "?",
+        "!",
+        "\t",
+    }
+)
 
 # Prose function words that indicate a surrounding word is NOT a path component.
 _PROSE_WORDS: frozenset[str] = frozenset(
-    "a an the of in on at to for or and but with use using we they it is are "
-    "was were be been being have has had do does did will would could should "
-    "may might shall must can my our your his her its their this that these "
-    "those here there so also just not no yes i you he she".split()
+    # A space-separated word list is far more readable here than a list literal.
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "or",
+        "and",
+        "but",
+        "with",
+        "use",
+        "using",
+        "we",
+        "they",
+        "it",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "must",
+        "can",
+        "my",
+        "our",
+        "your",
+        "his",
+        "her",
+        "its",
+        "their",
+        "this",
+        "that",
+        "these",
+        "those",
+        "here",
+        "there",
+        "so",
+        "also",
+        "just",
+        "not",
+        "no",
+        "yes",
+        "i",
+        "you",
+        "he",
+        "she",
+    ]  # noqa: SIM905
 )
 
 
@@ -101,9 +189,11 @@ class CommandResult:
 # Internal segment type
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _Seg:
     """One output segment with spacing metadata."""
+
     text: str
     # True → don't insert a space before the *next* segment.
     no_space_after: bool = False
@@ -114,6 +204,7 @@ class _Seg:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def apply_commands(
     text: str,
@@ -172,7 +263,9 @@ def apply_commands(
         # A word that immediately follows a technical symbol is itself part of
         # the technical run — keep prev_technical True so the next separator
         # (e.g. the second "slash" in "src/auth slash middleware") also fires.
-        prev_technical = _looks_technical(word) or (prev_technical and bool(re.match(r"^[A-Za-z0-9_]+$", word)))
+        prev_technical = _looks_technical(word) or (
+            prev_technical and bool(re.match(r"^[A-Za-z0-9_]+$", word))
+        )
         i += 1
 
     return CommandResult(
@@ -192,9 +285,9 @@ _CLOSERS: frozenset[str] = frozenset({")", "]", "}"})
 _QUOTES: frozenset[str] = frozenset({'"', "'"})
 # Path separators / identifier connectors always attach on both sides in a
 # technical run; in prose they get spaces.
-_CONNECTORS: frozenset[str] = frozenset({"/", "\\", ".", "_", "-", ":", "=", "+",
-                                          "*", "#", "|", "&", ";", ",", "?", "!",
-                                          '"', "'"})
+_CONNECTORS: frozenset[str] = frozenset(
+    {"/", "\\", ".", "_", "-", ":", "=", "+", "*", "#", "|", "&", ";", ",", "?", "!", '"', "'"}
+)
 
 
 def _make_symbol_seg(repl: str, *, is_in_technical_run: bool) -> _Seg:
@@ -218,6 +311,7 @@ def _make_symbol_seg(repl: str, *, is_in_technical_run: bool) -> _Seg:
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
+
 
 def _assemble(segs: list[_Seg]) -> str:
     if not segs:
@@ -253,6 +347,7 @@ def _assemble(segs: list[_Seg]) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _looks_technical(tok: str) -> bool:
     """True when *tok* looks like a path component or identifier fragment."""
     if not tok:
@@ -262,9 +357,7 @@ def _looks_technical(tok: str) -> bool:
     return bool(re.search(r"[0-9_./\-\\@]", tok))
 
 
-def _is_path_separator_context(
-    words: list[str], cmd_idx: int, cmd_len: int, phrase: str
-) -> bool:
+def _is_path_separator_context(words: list[str], cmd_idx: int, cmd_len: int, phrase: str) -> bool:
     """True when *phrase* is a path/connector command in a technical sequence.
 
     Requires at least one neighbour to already look technical (contains a
@@ -273,7 +366,13 @@ def _is_path_separator_context(
     words on both sides are treated as prose unless they abut another command.
     """
     _CONNECTOR_PHRASES = {
-        "slash", "dot", "period", "backslash", "underscore", "dash", "hyphen",
+        "slash",
+        "dot",
+        "period",
+        "backslash",
+        "underscore",
+        "dash",
+        "hyphen",
     }
     if phrase not in _CONNECTOR_PHRASES:
         return False
@@ -296,9 +395,7 @@ def _is_path_separator_context(
     def _clearly_technical(w: str) -> bool:
         if bool(re.search(r"[0-9_./\-\\@]", w)):
             return True
-        if len(w) <= 3 and w.lower() not in _PROSE_WORDS:
-            return True
-        return False
+        return len(w) <= 3 and w.lower() not in _PROSE_WORDS
 
     return _clearly_technical(prev_word) or _clearly_technical(next_word)
 

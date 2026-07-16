@@ -53,9 +53,7 @@ def build_system_prompt(mode: str, vocabulary: list[str]) -> str:
     for ``literal`` (which must bypass cleanup upstream) or any unknown mode.
     """
     if mode == "literal":
-        raise ValueError(
-            "literal mode must bypass the cleanup provider; no prompt is built"
-        )
+        raise ValueError("literal mode must bypass the cleanup provider; no prompt is built")
     instruction = _MODE_INSTRUCTIONS.get(mode)
     if instruction is None:
         raise ValueError(f"unknown cleanup mode: {mode!r}")
@@ -65,7 +63,6 @@ def build_system_prompt(mode: str, vocabulary: list[str]) -> str:
         # Offered as recognition context only; the model must not inject these.
         terms = ", ".join(vocabulary)
         parts.append(
-            "Known domain terms that may appear (preserve exactly, do not "
-            f"introduce): {terms}"
+            f"Known domain terms that may appear (preserve exactly, do not introduce): {terms}"
         )
     return "\n\n".join(parts)

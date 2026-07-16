@@ -67,6 +67,7 @@ class TokenRegistry:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def protect(text: str) -> tuple[str, TokenRegistry]:
     """Replace technical tokens in *text* with opaque placeholders.
 
@@ -134,17 +135,13 @@ def restore(text: str, registry: TokenRegistry) -> str:
     found_set = set(found_placeholders)
     missing = expected_set - found_set
     if missing:
-        raise ProtectionError(
-            f"Placeholder(s) missing from text after cleanup: {missing}"
-        )
+        raise ProtectionError(f"Placeholder(s) missing from text after cleanup: {missing}")
 
     # Check for duplicates.
     if len(found_placeholders) != len(found_set):
         seen2: set[str] = set()
         dupes = {ph for ph in found_placeholders if ph in seen2 or seen2.add(ph)}  # type: ignore[func-returns-value]
-        raise ProtectionError(
-            f"duplicate placeholder(s) found after cleanup: {dupes}"
-        )
+        raise ProtectionError(f"duplicate placeholder(s) found after cleanup: {dupes}")
 
     # Check order (only the expected placeholders, ignoring extras from other sources).
     found_in_expected = [ph for ph in found_placeholders if ph in expected_set]
@@ -163,6 +160,7 @@ def restore(text: str, registry: TokenRegistry) -> str:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _random_prefix(length: int = 6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
@@ -196,19 +194,13 @@ _PAT_PATH = re.compile(
 
 # Filenames with extensions (e.g. middleware.ts, config.toml, README.md)
 # Must have at least one dot with a known/plausible extension.
-_PAT_FILENAME = re.compile(
-    r"\b[A-Za-z0-9_\-]+\.[A-Za-z][A-Za-z0-9]{0,9}\b"
-)
+_PAT_FILENAME = re.compile(r"\b[A-Za-z0-9_\-]+\.[A-Za-z][A-Za-z0-9]{0,9}\b")
 
 # Semantic versions  v2.1.4  v1.0.0-beta.1
-_PAT_SEMVER = re.compile(
-    r"\bv\d+\.\d+\.\d+(?:[.\-][A-Za-z0-9.]+)?\b"
-)
+_PAT_SEMVER = re.compile(r"\bv\d+\.\d+\.\d+(?:[.\-][A-Za-z0-9.]+)?\b")
 
 # IP address with optional port  127.0.0.1:11434
-_PAT_IP_PORT = re.compile(
-    r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"
-)
+_PAT_IP_PORT = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b")
 
 # Git hashes: 7-40 hex chars that look like a hash (not a common word)
 _PAT_GIT_HASH = re.compile(r"\b[0-9a-f]{7,40}\b")
@@ -233,19 +225,19 @@ _PAT_KEBAB = re.compile(r"\b[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)+\b")
 
 # Ordered list: most specific / longest patterns first to avoid partial matches.
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (_PAT_FENCED_CODE,  "fenced_code"),
-    (_PAT_INLINE_CODE,  "inline_code"),
-    (_PAT_URL,          "url"),
-    (_PAT_EMAIL,        "email"),
-    (_PAT_IP_PORT,      "ip_port"),
-    (_PAT_SEMVER,       "semver"),
-    (_PAT_PATH,         "path"),
-    (_PAT_FILENAME,     "filename"),
-    (_PAT_GIT_HASH,     "git_hash"),
-    (_PAT_CLI_FLAG,     "cli_flag"),
-    (_PAT_ENV_VAR,      "env_var"),
-    (_PAT_CAMEL,        "camel"),
-    (_PAT_PASCAL,       "pascal"),
-    (_PAT_SNAKE,        "snake"),
-    (_PAT_KEBAB,        "kebab"),
+    (_PAT_FENCED_CODE, "fenced_code"),
+    (_PAT_INLINE_CODE, "inline_code"),
+    (_PAT_URL, "url"),
+    (_PAT_EMAIL, "email"),
+    (_PAT_IP_PORT, "ip_port"),
+    (_PAT_SEMVER, "semver"),
+    (_PAT_PATH, "path"),
+    (_PAT_FILENAME, "filename"),
+    (_PAT_GIT_HASH, "git_hash"),
+    (_PAT_CLI_FLAG, "cli_flag"),
+    (_PAT_ENV_VAR, "env_var"),
+    (_PAT_CAMEL, "camel"),
+    (_PAT_PASCAL, "pascal"),
+    (_PAT_SNAKE, "snake"),
+    (_PAT_KEBAB, "kebab"),
 ]

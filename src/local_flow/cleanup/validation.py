@@ -78,9 +78,7 @@ class ValidationReason(StrEnum):
     APPARENT_ANSWER = "APPARENT_ANSWER"
 
 
-def validate_placeholders(
-    text: str, registry: TokenRegistry | None
-) -> ValidationReason:
+def validate_placeholders(text: str, registry: TokenRegistry | None) -> ValidationReason:
     """Check that *text* preserves exactly the placeholders in *registry*.
 
     Rejects missing, duplicated, reordered, or *extra* (never-issued)

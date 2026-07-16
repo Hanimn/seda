@@ -355,9 +355,7 @@ def _cleanup_config(*, mode: str = "standard", enabled: bool = True) -> Config:
     """A Config with cleanup enabled (and app.mode set)."""
     from local_flow.config import load_config_from_dict
 
-    return load_config_from_dict(
-        {"app": {"mode": mode}, "cleanup": {"enabled": enabled}}
-    )
+    return load_config_from_dict({"app": {"mode": mode}, "cleanup": {"enabled": enabled}})
 
 
 def _record_states(ctrl: AppController) -> list[AppState]:

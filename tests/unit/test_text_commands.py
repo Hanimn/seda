@@ -9,10 +9,10 @@ from local_flow.text.commands import (
     apply_commands,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _std(text: str) -> str:
     """Apply commands in standard (contextual) mode."""
@@ -27,6 +27,7 @@ def _lit(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Unambiguous multi-word commands (always replaced in all modes)
 # ---------------------------------------------------------------------------
+
 
 class TestUnambiguousMultiWordCommands:
     @pytest.mark.parametrize(
@@ -64,6 +65,7 @@ class TestUnambiguousMultiWordCommands:
 # ---------------------------------------------------------------------------
 # Ambiguous single-word commands — contextual mode
 # ---------------------------------------------------------------------------
+
 
 class TestAmbiguousSingleWordContextual:
     """In standard/contextual mode, ambiguous words replaced only in technical sequences."""
@@ -103,6 +105,7 @@ class TestAmbiguousSingleWordContextual:
 # ---------------------------------------------------------------------------
 # Symbol prefix forces replacement of ambiguous words
 # ---------------------------------------------------------------------------
+
 
 class TestSymbolPrefix:
     def test_symbol_prefix_forces_dot(self) -> None:
@@ -153,6 +156,7 @@ class TestSymbolPrefix:
 # bare ambiguous single words are preserved (§3: "apply only explicitly
 # enabled spoken-symbol commands").
 # ---------------------------------------------------------------------------
+
 
 class TestLiteralMode:
     def test_bare_slash_not_replaced(self) -> None:
@@ -217,6 +221,7 @@ class TestLiteralMode:
 # Longest-phrase-wins
 # ---------------------------------------------------------------------------
 
+
 class TestLongestPhraseWins:
     def test_open_parenthesis_wins_over_open(self) -> None:
         # "open parenthesis" must match as one unit, not "open" alone.
@@ -236,6 +241,7 @@ class TestLongestPhraseWins:
 # Case insensitivity
 # ---------------------------------------------------------------------------
 
+
 class TestCaseInsensitivity:
     def test_upper_case_command(self) -> None:
         assert _std("Open Parenthesis x") == "(x"
@@ -250,6 +256,7 @@ class TestCaseInsensitivity:
 # ---------------------------------------------------------------------------
 # Token boundaries
 # ---------------------------------------------------------------------------
+
 
 class TestTokenBoundaries:
     def test_partial_word_not_matched(self) -> None:
@@ -267,6 +274,7 @@ class TestTokenBoundaries:
 # ---------------------------------------------------------------------------
 # Full path example from spec
 # ---------------------------------------------------------------------------
+
 
 class TestSpecExamples:
     def test_auth_middleware_path(self) -> None:
@@ -295,6 +303,7 @@ class TestSpecExamples:
 # ---------------------------------------------------------------------------
 # CommandResult metadata
 # ---------------------------------------------------------------------------
+
 
 class TestCommandResult:
     def test_returns_command_result(self) -> None:

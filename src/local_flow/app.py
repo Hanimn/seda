@@ -396,9 +396,7 @@ class AppController:
         self._record_cleanup_metrics(protected, cleaned, reason)
         return final
 
-    def _record_cleanup_metrics(
-        self, protected: str, cleaned: str, reason: object
-    ) -> None:
+    def _record_cleanup_metrics(self, protected: str, cleaned: str, reason: object) -> None:
         """Update counters and log aggregate, content-free cleanup metrics (§15)."""
         from local_flow.cleanup.base import CleanupMetrics
         from local_flow.cleanup.validation import (

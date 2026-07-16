@@ -59,6 +59,7 @@ class CheckResult:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _module_available(module: str) -> bool:
     """Whether an import would succeed, without importing (and its side effects)."""
     try:
@@ -101,6 +102,7 @@ def _cuda_available() -> bool:
 # ---------------------------------------------------------------------------
 # Individual checks
 # ---------------------------------------------------------------------------
+
 
 def check_python_version() -> CheckResult:
     version = ".".join(str(p) for p in sys.version_info[:3])
@@ -301,6 +303,7 @@ def check_writable_locations() -> CheckResult:
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
 
 def run_checks(config_path: str | None = None) -> list[CheckResult]:
     """Run all diagnostics and return their results in display order."""

@@ -32,9 +32,7 @@ _BASE_URL = "http://127.0.0.1:11434"
 
 @pytest.mark.integration
 @pytest.mark.skipif(_HTTPX_MISSING, reason="cleanup extra (httpx) not installed")
-@pytest.mark.skipif(
-    not _ollama_reachable(_BASE_URL), reason="Ollama server not reachable"
-)
+@pytest.mark.skipif(not _ollama_reachable(_BASE_URL), reason="Ollama server not reachable")
 def test_real_ollama_cleanup_preserves_placeholders() -> None:  # type: ignore[no-untyped-def]
     from local_flow.cleanup.ollama import OllamaCleanupProvider
     from local_flow.config import load_config_from_dict

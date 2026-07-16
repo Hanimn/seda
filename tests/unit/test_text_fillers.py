@@ -6,10 +6,10 @@ import pytest
 
 from local_flow.text.fillers import remove_fillers
 
-
 # ---------------------------------------------------------------------------
 # Mode-based enablement
 # ---------------------------------------------------------------------------
+
 
 class TestModeEnablement:
     def test_disabled_in_literal_mode(self) -> None:
@@ -34,6 +34,7 @@ class TestModeEnablement:
 # ---------------------------------------------------------------------------
 # Filler candidates removed in polished mode
 # ---------------------------------------------------------------------------
+
 
 class TestFillerCandidates:
     @pytest.mark.parametrize(
@@ -70,6 +71,7 @@ class TestFillerCandidates:
 # Like is never removed
 # ---------------------------------------------------------------------------
 
+
 class TestLikePreserved:
     def test_like_is_never_removed(self) -> None:
         text = "it is like a cache but faster"
@@ -83,6 +85,7 @@ class TestLikePreserved:
 # ---------------------------------------------------------------------------
 # Fillers inside technical tokens / protected spans are not removed
 # ---------------------------------------------------------------------------
+
 
 class TestFillerInsideTechnical:
     def test_filler_word_in_identifier_untouched(self) -> None:
@@ -103,6 +106,7 @@ class TestFillerInsideTechnical:
 # ---------------------------------------------------------------------------
 # Non-filler uses are preserved
 # ---------------------------------------------------------------------------
+
 
 class TestNonFillerPreserved:
     def test_actually_as_adverb_removed(self) -> None:

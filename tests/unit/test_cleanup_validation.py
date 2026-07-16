@@ -46,16 +46,11 @@ class TestAccepts:
 
     def test_no_placeholders_plain_prose_ok(self) -> None:
         protected, registry = _protect("please fix the bug")
-        assert (
-            validate_cleanup("please fix the bug", protected, registry)
-            is ValidationReason.OK
-        )
+        assert validate_cleanup("please fix the bug", protected, registry) is ValidationReason.OK
 
     def test_unicode_output_ok(self) -> None:
         protected, registry = _protect("cafe here")
-        assert (
-            validate_cleanup("café here", protected, registry) is ValidationReason.OK
-        )
+        assert validate_cleanup("café here", protected, registry) is ValidationReason.OK
 
 
 # ---------------------------------------------------------------------------
@@ -66,16 +61,11 @@ class TestAccepts:
 class TestEmptyAndMalformed:
     def test_empty_output_for_nonempty_input_rejected(self) -> None:
         protected, registry = _protect("fix the bug")
-        assert (
-            validate_cleanup("", protected, registry) is ValidationReason.EMPTY_OUTPUT
-        )
+        assert validate_cleanup("", protected, registry) is ValidationReason.EMPTY_OUTPUT
 
     def test_whitespace_only_rejected(self) -> None:
         protected, registry = _protect("fix the bug")
-        assert (
-            validate_cleanup("   \n\t ", protected, registry)
-            is ValidationReason.WHITESPACE
-        )
+        assert validate_cleanup("   \n\t ", protected, registry) is ValidationReason.WHITESPACE
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +80,7 @@ class TestPlaceholderIntegrity:
 
         stripped = re.sub(r"__LF_[A-Z0-9]+_\d{4}__", "", protected)
         assert (
-            validate_cleanup(stripped, protected, registry)
-            is ValidationReason.PLACEHOLDER_MISSING
+            validate_cleanup(stripped, protected, registry) is ValidationReason.PLACEHOLDER_MISSING
         )
 
     def test_duplicated_placeholder_rejected(self) -> None:
@@ -101,20 +90,14 @@ class TestPlaceholderIntegrity:
         ph = re.search(r"__LF_[A-Z0-9]+_\d{4}__", protected)
         assert ph is not None
         dup = protected + " " + ph.group()
-        assert (
-            validate_cleanup(dup, protected, registry)
-            is ValidationReason.PLACEHOLDER_DUP
-        )
+        assert validate_cleanup(dup, protected, registry) is ValidationReason.PLACEHOLDER_DUP
 
     def test_extra_new_placeholder_rejected(self) -> None:
         # An invented placeholder with the same prefix but an unseen index.
         protected, registry = _protect("check src/app.ts now")
         fabricated = f"__LF_{registry.prefix}_9999__"
         tampered = protected + " " + fabricated
-        assert (
-            validate_cleanup(tampered, protected, registry)
-            is ValidationReason.PLACEHOLDER_EXTRA
-        )
+        assert validate_cleanup(tampered, protected, registry) is ValidationReason.PLACEHOLDER_EXTRA
 
     def test_reordered_placeholders_rejected(self) -> None:
         protected, registry = _protect("check src/a.ts and src/b.ts")
@@ -126,8 +109,7 @@ class TestPlaceholderIntegrity:
         p0, p1 = phs[0], phs[1]
         swapped = protected.replace(p0, "TEMP").replace(p1, p0).replace("TEMP", p1)
         assert (
-            validate_cleanup(swapped, protected, registry)
-            is ValidationReason.PLACEHOLDER_REORDER
+            validate_cleanup(swapped, protected, registry) is ValidationReason.PLACEHOLDER_REORDER
         )
 
     def test_validate_placeholders_ok_when_intact(self) -> None:
@@ -145,9 +127,7 @@ class TestLength:
         protected, registry = _protect("short input")
         # max(len*1.75, len+200); len is small so the +200 bound dominates.
         too_long = "x" * (len(protected) + 500)
-        assert (
-            validate_cleanup(too_long, protected, registry) is ValidationReason.TOO_LONG
-        )
+        assert validate_cleanup(too_long, protected, registry) is ValidationReason.TOO_LONG
 
     def test_modest_expansion_ok(self) -> None:
         protected, registry = _protect("fix the bug")
@@ -175,17 +155,12 @@ class TestPreface:
     )
     def test_preface_rejected(self, prefaced: str) -> None:
         protected, registry = _protect("fix the bug")
-        assert (
-            validate_cleanup(prefaced, protected, registry) is ValidationReason.PREFACE
-        )
+        assert validate_cleanup(prefaced, protected, registry) is ValidationReason.PREFACE
 
     def test_non_preface_not_flagged(self) -> None:
         protected, registry = _protect("here the build fails")
         # "here the" is not an assistant preface.
-        assert (
-            validate_cleanup("here the build fails", protected, registry)
-            is ValidationReason.OK
-        )
+        assert validate_cleanup("here the build fails", protected, registry) is ValidationReason.OK
 
 
 # ---------------------------------------------------------------------------
@@ -208,10 +183,7 @@ class TestApparentAnswer:
     )
     def test_apparent_answer_rejected(self, answer: str) -> None:
         protected, registry = _protect("how do I fix the slow query")
-        assert (
-            validate_cleanup(answer, protected, registry)
-            is ValidationReason.APPARENT_ANSWER
-        )
+        assert validate_cleanup(answer, protected, registry) is ValidationReason.APPARENT_ANSWER
 
     def test_cleaned_question_not_flagged_as_answer(self) -> None:
         # A cleaned dictation that is itself a question must pass.

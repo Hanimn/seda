@@ -51,9 +51,7 @@ class OllamaCleanupProvider:
         """Best-effort reachability check via ``GET /api/tags``."""
         try:
             client = self._get_client()
-            response = client.get(
-                self._url("/api/tags"), timeout=self._config.timeout_seconds
-            )
+            response = client.get(self._url("/api/tags"), timeout=self._config.timeout_seconds)
         except Exception:  # noqa: BLE001 - any failure means "not available"
             return False
         status = getattr(response, "status_code", 200)
