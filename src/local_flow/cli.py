@@ -1,10 +1,8 @@
 """The ``local-flow`` command-line interface (see IMPLEMENTATION_PLAN.md §20).
 
 Phase 0 implements the non-hardware commands — ``version``, ``config``, and
-``doctor`` — end to end. Commands that need audio, models, or global hotkeys
-are declared so they appear in ``--help`` and the exit-code contract is
-stable, but they report that they are not yet implemented rather than
-pretending to work.
+``doctor`` — end to end. Phase 2 adds ``devices`` and ``test-mic``.
+Commands that need global hotkeys are declared as stubs.
 """
 
 from __future__ import annotations
@@ -267,15 +265,99 @@ def _copy_to_clipboard(text: str) -> None:
 
 
 @app.command()
-def devices() -> None:
-    """List audio input devices (not implemented in Phase 0)."""
-    _not_implemented("devices", ExitCode.AUDIO)
+def devices(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """List audio input devices."""
+    from local_flow.audio.devices import DeviceError, list_devices
+
+    try:
+        devs = list_devices()
+    except DeviceError as exc:
+        _err(str(exc))
+        raise typer.Exit(code=int(ExitCode.AUDIO)) from exc
+    except Exception as exc:  # noqa: BLE001
+        _err(f"could not list audio devices: {exc}")
+        raise typer.Exit(code=int(ExitCode.AUDIO)) from exc
+
+    if json_output:
+        payload = [
+            {
+                "index": d.index,
+                "name": d.name,
+                "input_channels": d.input_channels,
+                "default_sample_rate": d.default_sample_rate,
+                "default": d.is_default,
+            }
+            for d in devs
+        ]
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        for d in devs:
+            marker = " (default)" if d.is_default else ""
+            typer.echo(
+                f"{d.index:>3}  {d.name}"
+                f"  [{d.input_channels}ch, {d.default_sample_rate:.0f} Hz]{marker}"
+            )
 
 
 @app.command(name="test-mic")
-def test_mic() -> None:
-    """Record a short sample to test the microphone (not implemented in Phase 0)."""
-    _not_implemented("test-mic", ExitCode.AUDIO)
+def test_mic(
+    duration: float = typer.Option(5.0, "--duration", help="Recording length in seconds."),
+    save: Path | None = typer.Option(None, "--save", help="Save the recording to this WAV file."),
+    device: str | None = typer.Option(None, "--device", help="Device index or name."),
+) -> None:
+    """Record a short sample and report microphone levels."""
+    import time
+    import wave
+
+    import numpy as np
+
+    from local_flow.audio.recorder import (
+        RecorderConfig,
+        RecordingTooShortError,
+        SounddeviceRecorder,
+    )
+
+    cfg = RecorderConfig(
+        device=device,
+        max_duration_seconds=duration,
+    )
+    recorder = SounddeviceRecorder(cfg)
+
+    typer.echo(f"Recording for {duration:.0f} s … (speak now)")
+    try:
+        recorder.start()
+        time.sleep(duration)
+        audio = recorder.stop()
+    except RecordingTooShortError as exc:
+        _err(str(exc))
+        raise typer.Exit(code=int(ExitCode.AUDIO)) from exc
+    except Exception as exc:  # noqa: BLE001
+        _err(f"microphone error: {exc}")
+        raise typer.Exit(code=int(ExitCode.AUDIO)) from exc
+
+    peak_pct = audio.peak_level * 100
+    rms_pct = float(np.sqrt(np.mean(audio.samples.astype(np.float64) ** 2))) * 100
+    typer.echo(f"Duration : {audio.duration_seconds:.2f} s")
+    typer.echo(f"Peak     : {peak_pct:.1f}%{'  *** CLIPPING ***' if audio.clipping else ''}")
+    typer.echo(f"RMS      : {rms_pct:.1f}%")
+    typer.echo(f"Speech   : {'yes' if audio.speech_detected else 'no (check mic level)'}")
+    if audio.overflow_count:
+        typer.echo(f"Overflows: {audio.overflow_count} (check system audio load)", err=True)
+
+    if save is not None:
+        samples_int16 = (audio.samples * 32767).clip(-32768, 32767).astype(np.int16)
+        try:
+            with wave.open(str(save), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(audio.sample_rate)
+                wf.writeframes(samples_int16.tobytes())
+        except OSError as exc:
+            _err(f"could not write WAV file {save}: {exc}")
+            raise typer.Exit(code=int(ExitCode.AUDIO)) from exc
+        typer.echo(f"Saved    : {save}")
 
 
 # --- models sub-commands ----------------------------------------------------
