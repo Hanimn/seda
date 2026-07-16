@@ -159,6 +159,13 @@ class OllamaConfig(_Section):
     model: str = "qwen2.5:3b"
     temperature: float = Field(default=0.0, ge=0.0)
     keep_alive: str = "10m"
+    # Bounded context window sent to Ollama (§15 "A bounded context size").
+    num_ctx: int = Field(default=4096, gt=0)
+    # Cap on generated tokens, as a multiple of the estimated input token count
+    # (§15 "A maximum output length appropriate to the input"). The provider
+    # computes num_predict = ceil(input_tokens * max_output_ratio), floored at a
+    # small minimum, so the model cannot run away far past the input length.
+    max_output_ratio: float = Field(default=2.0, gt=0.0)
 
 
 class CleanupConfig(_Section):

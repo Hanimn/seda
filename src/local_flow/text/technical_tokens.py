@@ -25,7 +25,14 @@ class ProtectionError(ValueError):
 # NNNN is the zero-padded sequential index.
 # ---------------------------------------------------------------------------
 
-_PH_PATTERN = re.compile(r"__LF_([A-Z0-9]+)_(\d{4})__")
+# Public so other modules (e.g. cleanup output validation) share this single
+# source of truth for the placeholder format rather than duplicating the regex.
+PH_PATTERN = re.compile(r"__LF_([A-Z0-9]+)_(\d{4})__")
+
+
+def placeholder_for(prefix: str, idx: int) -> str:
+    """Return the canonical placeholder string for *prefix* and index *idx*."""
+    return f"__LF_{prefix}_{idx:04d}__"
 
 
 @dataclass
@@ -43,7 +50,7 @@ class TokenRegistry:
     def add(self, original: str) -> str:
         """Store *original* and return its placeholder."""
         idx = len(self._order)
-        placeholder = f"__LF_{self.prefix}_{idx:04d}__"
+        placeholder = placeholder_for(self.prefix, idx)
         self._mapping[placeholder] = original
         self._order.append(placeholder)
         return placeholder
@@ -116,9 +123,9 @@ def restore(text: str, registry: TokenRegistry) -> str:
     if registry.count == 0:
         return text
 
-    found = _PH_PATTERN.findall(text)
+    found = PH_PATTERN.findall(text)
     # found is a list of (prefix, index) tuples
-    found_placeholders = [f"__LF_{p}_{i}__" for p, i in found]
+    found_placeholders = [placeholder_for(p, int(i)) for p, i in found]
 
     expected = registry.placeholders_in_order()
 

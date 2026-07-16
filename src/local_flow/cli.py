@@ -186,13 +186,20 @@ def run(
         "--no-paste",
         help="Copy the transcript to the clipboard without simulating paste.",
     ),
+    no_cleanup: bool = typer.Option(
+        False,
+        "--no-cleanup",
+        help="Disable optional LLM cleanup for this run, regardless of config.",
+    ),
 ) -> None:
     """Run the background dictation loop."""
     from local_flow.app import AppController
 
     cfg = _safe_load(config)
     configure_logging(cfg)
-    AppController(cfg, copy_only=no_paste).run()
+    # ``--no-cleanup`` force-disables cleanup; otherwise the config flag decides.
+    cleanup_enabled = None if not no_cleanup else False
+    AppController(cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled).run()
 
 
 @app.command()

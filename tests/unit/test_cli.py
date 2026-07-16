@@ -146,6 +146,60 @@ def test_run_help_documents_no_paste() -> None:
     assert "no-paste" in result.output
 
 
+def test_run_no_cleanup_flag_force_disables_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--no-cleanup` passes cleanup_enabled=False to the controller."""
+    import local_flow.app as app_module
+
+    captured: dict[str, object] = {}
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> None:  # pragma: no cover - trivial stub
+            pass
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--no-cleanup", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert captured.get("cleanup_enabled") is False
+
+
+def test_run_without_no_cleanup_leaves_cleanup_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import local_flow.app as app_module
+
+    captured: dict[str, object] = {}
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> None:  # pragma: no cover - trivial stub
+            pass
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0
+    # No flag → None (config decides).
+    assert captured.get("cleanup_enabled") is None
+
+
+def test_run_help_documents_no_cleanup() -> None:
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "no-cleanup" in result.output
+
+
 # --- transcribe (Phase 1) ---------------------------------------------------
 
 

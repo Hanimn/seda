@@ -92,13 +92,16 @@ disallow_untyped_defs = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-# Native / optional third-party libraries without bundled type stubs.
+# Native / optional third-party libraries without bundled type stubs, plus
+# optional-extra packages (httpx) not present in the base type-check env; the
+# cleanup provider imports httpx lazily so the base install never needs it.
 module = [
   "sounddevice.*",
   "pynput.*",
   "pyperclip.*",
   "faster_whisper.*",
   "ctranslate2.*",
+  "httpx.*",
 ]
 ignore_missing_imports = true
 

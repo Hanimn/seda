@@ -78,6 +78,8 @@ base_url = "http://127.0.0.1:11434"   # loopback only unless allow_remote_endpoi
 model = "qwen2.5:3b"
 temperature = 0.0
 keep_alive = "10m"
+num_ctx = 4096                        # bounded context window sent to the model
+max_output_ratio = 2.0                # cap output length at ~this × the input
 
 [paste]
 method = "clipboard"             # "clipboard" or "type"

@@ -20,15 +20,26 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from local_flow.audio.recorder import RecorderConfig, SounddeviceRecorder
+from local_flow.cleanup.base import CleanupCounters
 from local_flow.config import Config
-from local_flow.errors import InvalidTransitionError, LocalFlowError
+from local_flow.errors import (
+    CleanupError,
+    InvalidTransitionError,
+    LocalFlowError,
+)
 from local_flow.notifications import ConsoleNotifier, NotificationEvent
 from local_flow.state import AppState, StateMachine
-from local_flow.text.pipeline import process_transcript
+from local_flow.text.pipeline import (
+    PipelineResult,
+    finalize_after_cleanup,
+    process_transcript,
+)
+from local_flow.text.technical_tokens import ProtectionError
 from local_flow.transcription.factory import create_backend
 
 if TYPE_CHECKING:
     from local_flow.audio.recorder import RecordedAudio
+    from local_flow.cleanup.base import CleanupProvider
     from local_flow.input.hotkeys import HotkeyProvider
     from local_flow.input.paste import TextInserter
     from local_flow.transcription.base import TranscriptionBackend
@@ -46,10 +57,19 @@ class AppController:
         hotkey_provider: HotkeyProvider | None = None,
         backend: TranscriptionBackend | None = None,
         text_inserter: TextInserter | None = None,
+        cleanup_provider: CleanupProvider | None = None,
         copy_only: bool = False,
+        cleanup_enabled: bool | None = None,
     ) -> None:
         self._config = config
         self._copy_only = copy_only
+        # Cleanup is on only when config enables it AND it isn't force-disabled
+        # (e.g. `run --no-cleanup`). ``cleanup_enabled`` overrides the config
+        # flag when provided.
+        if cleanup_enabled is None:
+            self._cleanup_enabled = config.cleanup.enabled
+        else:
+            self._cleanup_enabled = cleanup_enabled and config.cleanup.enabled
         self._state_machine = StateMachine()
         self._notifier = ConsoleNotifier(
             enabled=config.notifications.console_enabled,
@@ -69,12 +89,27 @@ class AppController:
         self._shutdown_event = threading.Event()
         self._pending_future: Future[None] | None = None
 
+        # Aggregate, content-free cleanup counters (§28).
+        self._cleanup_counters = CleanupCounters()
+
         if text_inserter is None:
             from local_flow.input.paste import build_text_inserter
 
             self._inserter: TextInserter = build_text_inserter(config.paste)
         else:
             self._inserter = text_inserter
+
+        # Build the cleanup provider only when cleanup is actually enabled, so a
+        # plain dictation setup never constructs an HTTP provider.
+        self._cleanup_provider: CleanupProvider | None
+        if cleanup_provider is not None:
+            self._cleanup_provider = cleanup_provider
+        elif self._cleanup_enabled:
+            from local_flow.cleanup.factory import create_cleanup_provider
+
+            self._cleanup_provider = create_cleanup_provider(config)
+        else:
+            self._cleanup_provider = None
 
         if hotkey_provider is None:
             from local_flow.input.hotkeys import PynputHotkeyProvider
@@ -255,6 +290,11 @@ class AppController:
                 self._state_machine.transition(AppState.IDLE)
             return
 
+        # Optional LLM cleanup (Phase 6). Fail-open: any error or rejected
+        # output falls back to the deterministic transcript so a successful
+        # transcription is never lost. Bypassed entirely in literal mode.
+        final_text = self._maybe_clean(pipeline)
+
         # Insert the text at the cursor (Phase 5). Insertion never presses
         # Enter; a paste failure leaves the transcript on the clipboard.
         try:
@@ -262,7 +302,7 @@ class AppController:
         except InvalidTransitionError:
             return
 
-        insertion = self._inserter.insert(pipeline.text, copy_only=self._copy_only)
+        insertion = self._inserter.insert(final_text, copy_only=self._copy_only)
 
         if insertion.error is not None:
             # §16 paste failure: transcript is on the clipboard; notify without
@@ -272,8 +312,96 @@ class AppController:
         else:
             self._notifier.notify(
                 NotificationEvent.SUCCESS,
-                char_count=len(pipeline.text),
+                char_count=len(final_text),
             )
 
         with contextlib.suppress(InvalidTransitionError):
             self._state_machine.transition(AppState.IDLE)
+
+    def _maybe_clean(self, pipeline: PipelineResult) -> str:
+        """Run optional LLM cleanup, returning the text to paste.
+
+        Fail-open (§15): returns the cleaned text only when cleanup is enabled,
+        the mode is not literal, the provider succeeds, and the output passes
+        validation; otherwise returns the deterministic ``pipeline.text``. Only
+        aggregate, content-free metrics are logged (§21, §26).
+        """
+        if (
+            not self._cleanup_enabled
+            or self._cleanup_provider is None
+            or pipeline.effective_mode == "literal"
+        ):
+            return pipeline.text
+
+        # Enter CLEANING; if the transition is illegal (e.g. shutting down),
+        # skip cleanup rather than crash.
+        try:
+            self._state_machine.transition(AppState.CLEANING)
+        except InvalidTransitionError:
+            return pipeline.text
+
+        from local_flow.cleanup.validation import ValidationReason, validate_cleanup
+
+        protected = pipeline.protected_text
+        registry = pipeline.token_registry
+
+        try:
+            cleaned = self._cleanup_provider.clean(
+                protected,
+                pipeline.effective_mode,
+                self._config.text.custom_vocabulary,
+            )
+        except CleanupError:
+            self._cleanup_counters.failed += 1
+            logger.info("cleanup failed; using deterministic transcript")
+            return pipeline.text
+
+        reason = validate_cleanup(cleaned, protected, registry)
+        if reason is ValidationReason.OK:
+            try:
+                final = finalize_after_cleanup(cleaned, registry)
+            except ProtectionError:
+                # Defensive: validation passed but restore still objected. Treat
+                # as a validation failure so we fall back rather than raise.
+                reason = ValidationReason.PLACEHOLDER_MISSING
+                final = pipeline.text
+        else:
+            final = pipeline.text
+
+        self._record_cleanup_metrics(protected, cleaned, reason)
+        return final
+
+    def _record_cleanup_metrics(
+        self, protected: str, cleaned: str, reason: object
+    ) -> None:
+        """Update counters and log aggregate, content-free cleanup metrics (§15)."""
+        from local_flow.cleanup.base import CleanupMetrics
+        from local_flow.cleanup.validation import (
+            ValidationReason,
+            edit_ratio,
+            placeholder_count,
+        )
+
+        accepted = reason is ValidationReason.OK
+        metrics = CleanupMetrics(
+            input_chars=len(protected),
+            output_chars=len(cleaned),
+            edit_ratio=edit_ratio(protected, cleaned),
+            placeholder_count=placeholder_count(cleaned),
+            validation=reason.value if isinstance(reason, ValidationReason) else str(reason),
+        )
+        if accepted:
+            self._cleanup_counters.succeeded += 1
+        else:
+            self._cleanup_counters.failed += 1
+            self._cleanup_counters.validation_failures += 1
+            logger.info("cleanup rejected (%s); using deterministic transcript", metrics.validation)
+        # Aggregate metrics only — never the transcript or model output (§15).
+        logger.info(
+            "cleanup metrics: in_chars=%d out_chars=%d edit_ratio=%.2f placeholders=%d result=%s",
+            metrics.input_chars,
+            metrics.output_chars,
+            metrics.edit_ratio,
+            metrics.placeholder_count,
+            metrics.validation,
+        )

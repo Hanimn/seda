@@ -9,16 +9,18 @@ Pipeline stages (in order):
     6. Final whitespace normalization
     7. Restore protected technical tokens
 
-The optional LLM cleanup stage (Phase 6) runs between steps 5 and 6 and is
-not implemented here — this module hands off a ``PipelineResult`` that the
-controller can pass to a cleanup provider before calling
-:func:`finalize_after_cleanup`.
+The optional LLM cleanup stage (Phase 6) runs at step 6: the controller hands
+the protected text (:attr:`PipelineResult.protected_text`, placeholders still
+in place) to a cleanup provider, then calls :func:`finalize_after_cleanup` to
+run steps 7 (restore) and the final normalization. When no cleanup runs,
+:func:`process_transcript` calls :func:`finalize_after_cleanup` itself so
+:attr:`PipelineResult.text` is the ready-to-paste deterministic result.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from local_flow.text.commands import apply_commands
@@ -96,6 +98,12 @@ class PipelineResult:
     commands_applied: int = 0
     # The token registry from technical-token protection (for Phase 6 handoff).
     token_registry: TokenRegistry | None = None
+    # The pre-restore text with technical tokens still replaced by opaque
+    # placeholders. An optional LLM cleanup provider (Phase 6) operates on THIS
+    # (placeholders must survive cleanup, §14), then the controller calls
+    # :func:`finalize_after_cleanup` to restore tokens and normalize. Empty for
+    # cancelled/empty transcripts.
+    protected_text: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -152,11 +160,14 @@ def process_transcript(
     # --- Stage 5: filler removal ---
     processed = remove_fillers(protected_text, mode=effective_mode)
 
-    # --- Stage 6 placeholder: LLM cleanup would go here ---
+    # --- Stage 6: optional LLM cleanup ---
+    # Not run here. The controller may hand ``processed`` (which still contains
+    # opaque placeholders) to a cleanup provider and then call
+    # :func:`finalize_after_cleanup`. When no cleanup runs, we finalize the
+    # deterministic result immediately so ``text`` is the ready-to-paste string.
 
     # --- Stage 7: restore tokens + final normalization ---
-    restored = restore(processed, registry)
-    final = _normalize(restored)
+    final = finalize_after_cleanup(processed, registry)
 
     return PipelineResult(
         text=final,
@@ -165,7 +176,28 @@ def process_transcript(
         effective_mode=effective_mode,
         commands_applied=commands_applied,
         token_registry=registry,
+        protected_text=processed,
     )
+
+
+def finalize_after_cleanup(protected_text: str, registry: TokenRegistry | None) -> str:
+    """Restore protected technical tokens and apply final normalization.
+
+    This is the single restore site for the pipeline. It is called by
+    :func:`process_transcript` for the no-cleanup path, and by the controller
+    after an optional LLM cleanup stage has run on the protected text.
+
+    ``protected_text`` must still contain every placeholder from ``registry``,
+    unchanged and in order — :func:`~local_flow.text.technical_tokens.restore`
+    raises :class:`~local_flow.text.technical_tokens.ProtectionError` otherwise,
+    which the controller treats as a cleanup-validation failure and falls back
+    to the deterministic transcript. When ``registry`` is ``None`` (nothing was
+    protected) the text is normalized as-is.
+    """
+    if registry is None:
+        return _normalize(protected_text)
+    restored = restore(protected_text, registry)
+    return _normalize(restored)
 
 
 # ---------------------------------------------------------------------------

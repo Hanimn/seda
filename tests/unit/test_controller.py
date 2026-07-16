@@ -51,12 +51,17 @@ def _make_controller(
     *,
     backend: FakeBackend | None = None,
     fake_audio: bool = True,
+    config: Config | None = None,
+    cleanup_provider: object | None = None,
 ) -> tuple[AppController, FakeHotkeyProvider, FakeBackend]:
     """Build an AppController with injectable fakes."""
-    cfg = Config()
+    cfg = config or Config()
     hotkeys = FakeHotkeyProvider()
     be = backend or FakeBackend()
-    ctrl = AppController(cfg, hotkey_provider=hotkeys, backend=be)
+    kwargs: dict[str, object] = {"hotkey_provider": hotkeys, "backend": be}
+    if cleanup_provider is not None:
+        kwargs["cleanup_provider"] = cleanup_provider
+    ctrl = AppController(cfg, **kwargs)  # type: ignore[arg-type]
     if fake_audio:
         # Inject a fake recorder that produces audio immediately on stop().
         ctrl._recorder = _FakeRecorder()
@@ -341,6 +346,187 @@ class TestTextInsertion:
             assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
             # Paste failure surfaces as an error, but never crashes the loop.
             assert "[error]" in buf.getvalue()
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+
+def _cleanup_config(*, mode: str = "standard", enabled: bool = True) -> Config:
+    """A Config with cleanup enabled (and app.mode set)."""
+    from local_flow.config import load_config_from_dict
+
+    return load_config_from_dict(
+        {"app": {"mode": mode}, "cleanup": {"enabled": enabled}}
+    )
+
+
+def _record_states(ctrl: AppController) -> list[AppState]:
+    """Patch the controller's state machine to record every transition target."""
+    seen: list[AppState] = []
+    original = ctrl._state_machine.transition
+
+    def recording(to: AppState) -> None:
+        seen.append(to)
+        original(to)
+
+    ctrl._state_machine.transition = recording  # type: ignore[method-assign]
+    return seen
+
+
+class TestCleanupPath:
+    """Cleanup runs only when enabled + non-literal; always fail-open (Phase 6)."""
+
+    def test_cleaned_text_pasted_and_cleaning_state_entered(self) -> None:
+        from local_flow.cleanup.fake import FakeCleanupProvider
+
+        be = FakeBackend(text="um so fix the bug")
+        provider = FakeCleanupProvider(output="fix the bug")
+        ctrl, hotkeys, _ = _make_controller(
+            backend=be, config=_cleanup_config(), cleanup_provider=provider
+        )
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+        seen = _record_states(ctrl)
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            assert AppState.CLEANING in seen
+            assert inserter.inserted == ["fix the bug"]
+            assert len(provider.calls) == 1
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_validation_failure_falls_back_to_deterministic(self) -> None:
+        from local_flow.cleanup.fake import FakeCleanupProvider
+
+        be = FakeBackend(text="fix the bug")
+        # An assistant preface is rejected by validation → fall back.
+        provider = FakeCleanupProvider(output="Sure, here is the cleaned text")
+        ctrl, hotkeys, _ = _make_controller(
+            backend=be, config=_cleanup_config(), cleanup_provider=provider
+        )
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            # Rejected cleanup → deterministic transcript pasted, not the preface.
+            assert inserter.inserted == ["fix the bug"]
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_apparent_answer_falls_back_to_deterministic(self) -> None:
+        from local_flow.cleanup.fake import FakeCleanupProvider
+
+        be = FakeBackend(text="how do I fix the slow query")
+        # The model answered instead of cleaning → rejected → fall back.
+        provider = FakeCleanupProvider(output="You should add a database index")
+        ctrl, hotkeys, _ = _make_controller(
+            backend=be, config=_cleanup_config(), cleanup_provider=provider
+        )
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            assert inserter.inserted == ["how do I fix the slow query"]
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_provider_error_falls_back_transcription_not_lost(self) -> None:
+        from local_flow.cleanup.fake import FakeCleanupProvider
+        from local_flow.errors import CleanupError
+
+        be = FakeBackend(text="fix the bug")
+        provider = FakeCleanupProvider(raise_error=CleanupError("no server"))
+        ctrl, hotkeys, _ = _make_controller(
+            backend=be, config=_cleanup_config(), cleanup_provider=provider
+        )
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            # Provider crashed → transcription preserved, deterministic pasted.
+            assert inserter.inserted == ["fix the bug"]
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_literal_mode_bypasses_cleanup(self) -> None:
+        from local_flow.cleanup.fake import FakeCleanupProvider
+
+        # Base mode literal → cleanup provider must never be called.
+        be = FakeBackend(text="fix the bug")
+        provider = FakeCleanupProvider(output="SHOULD NOT APPEAR")
+        ctrl, hotkeys, _ = _make_controller(
+            backend=be,
+            config=_cleanup_config(mode="literal"),
+            cleanup_provider=provider,
+        )
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+        seen = _record_states(ctrl)
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            assert provider.calls == []
+            assert AppState.CLEANING not in seen
+            assert inserter.inserted == ["fix the bug"]
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_disabled_cleanup_skips_provider(self) -> None:
+        from local_flow.cleanup.fake import FakeCleanupProvider
+
+        be = FakeBackend(text="fix the bug")
+        provider = FakeCleanupProvider(output="SHOULD NOT APPEAR")
+        ctrl, hotkeys, _ = _make_controller(
+            backend=be,
+            config=_cleanup_config(enabled=False),
+            cleanup_provider=provider,
+        )
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            assert provider.calls == []
+            assert inserter.inserted == ["fix the bug"]
         finally:
             ctrl.shutdown()
             t.join(timeout=3.0)

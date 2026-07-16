@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.text.pipeline import PipelineResult, process_transcript
+from local_flow.text.pipeline import (
+    PipelineResult,
+    finalize_after_cleanup,
+    process_transcript,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -201,3 +205,69 @@ class TestPipelineResult:
     def test_effective_mode_is_base_mode_when_no_override(self) -> None:
         result = process_transcript("fix the bug", mode="standard")
         assert result.effective_mode == "standard"
+
+
+# ---------------------------------------------------------------------------
+# The finalize_after_cleanup seam (Phase 6 handoff)
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeAfterCleanup:
+    """process_transcript exposes protected (pre-restore) text; a cleanup
+    provider operates on it, then finalize_after_cleanup restores + normalizes."""
+
+    def test_protected_text_still_contains_placeholders(self) -> None:
+        import re
+
+        result = process_transcript(
+            "check src/auth/middleware.ts for bugs", mode="standard"
+        )
+        # The protected text handed to a cleanup provider must still carry the
+        # opaque placeholders (the technical token is protected, not visible).
+        assert re.search(r"__LF_[A-Z0-9]+_\d{4}__", result.protected_text)
+        assert "src/auth/middleware.ts" not in result.protected_text
+
+    def test_finalize_reproduces_pipeline_text(self) -> None:
+        # Finalizing the untouched protected text must reproduce the same final
+        # text process_transcript already returned (backward-compat contract).
+        result = process_transcript(
+            "check src/auth/middleware.ts for bugs", mode="standard"
+        )
+        assert (
+            finalize_after_cleanup(result.protected_text, result.token_registry)
+            == result.text
+        )
+
+    def test_finalize_restores_cleaned_text(self) -> None:
+        result = process_transcript("look at README.md now", mode="standard")
+        # A "cleaned" version that keeps the placeholder intact restores fine.
+        cleaned = result.protected_text  # provider returned it unchanged
+        final = finalize_after_cleanup(cleaned, result.token_registry)
+        assert "README.md" in final
+
+    def test_finalize_rejects_reordered_placeholders(self) -> None:
+        from local_flow.text.technical_tokens import ProtectionError
+
+        result = process_transcript("check src/a.ts and src/b.ts", mode="standard")
+        import re
+
+        phs = re.findall(r"__LF_[A-Z0-9]+_\d{4}__", result.protected_text)
+        if len(phs) < 2:
+            pytest.skip("need at least 2 placeholders for reorder test")
+        p0, p1 = phs[0], phs[1]
+        swapped = (
+            result.protected_text.replace(p0, "TEMP")
+            .replace(p1, p0)
+            .replace("TEMP", p1)
+        )
+        with pytest.raises(ProtectionError):
+            finalize_after_cleanup(swapped, result.token_registry)
+
+    def test_finalize_with_no_registry_just_normalizes(self) -> None:
+        # No registry (nothing protected) → normalize the text as-is.
+        assert finalize_after_cleanup("hello   world  ", None) == "hello world"
+
+    def test_protected_text_empty_for_cancelled(self) -> None:
+        result = process_transcript("scratch that never mind", mode="standard")
+        assert result.cancelled is True
+        assert result.protected_text == ""

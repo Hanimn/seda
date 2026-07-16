@@ -64,5 +64,19 @@ class PasteError(LocalFlowError):
     """
 
 
+class CleanupError(LocalFlowError):
+    """The optional LLM cleanup provider was unavailable or failed.
+
+    Covers transport failures, timeouts, and connection errors talking to the
+    local cleanup endpoint. Cleanup is fail-open: callers catch this and fall
+    back to the deterministic transcript (see §15 "Fail open").
+
+    Note: rejected *output* (bad placeholders, prefaces, over-expansion) is not
+    an exception — :mod:`local_flow.cleanup.validation` reports it as a
+    content-free ``ValidationReason`` so the reason can be logged without
+    leaking transcript or model text.
+    """
+
+
 class InvalidTransitionError(LocalFlowError):
     """Attempted an illegal state-machine transition."""
