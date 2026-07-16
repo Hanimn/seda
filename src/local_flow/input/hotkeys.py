@@ -17,6 +17,7 @@ physical key-down, and spurious releases are silently dropped.
 from __future__ import annotations
 
 import contextlib
+import sys
 import threading
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -112,6 +113,102 @@ def _released_key_matches(key: Any, trigger: str) -> bool:
     return False
 
 
+# Base-name aliases so a chord token like "ctrl" matches the left/right variants
+# (ctrl_l / ctrl_r) that live key events report.
+_MODIFIER_ALIASES: dict[str, frozenset[str]] = {
+    "ctrl": frozenset({"ctrl", "ctrl_l", "ctrl_r"}),
+    "shift": frozenset({"shift", "shift_l", "shift_r"}),
+    "alt": frozenset({"alt", "alt_l", "alt_r", "alt_gr"}),
+    "cmd": frozenset({"cmd", "cmd_l", "cmd_r"}),
+}
+
+
+def _chord_key_names(hotkey: str) -> frozenset[str]:
+    """Return every key name that belongs to *hotkey*, expanded for aliases.
+
+    ``"<ctrl>+<shift>+space"`` → ``{ctrl, ctrl_l, ctrl_r, shift, shift_l,
+    shift_r, space}``. Used to decide which events to suppress so the chord
+    never leaks to the focused application (issue #11).
+    """
+    names: set[str] = set()
+    for token in hotkey.split("+"):
+        bare = token.strip().strip("<>")
+        if not bare:
+            continue
+        names |= _MODIFIER_ALIASES.get(bare, frozenset({bare}))
+    return frozenset(names)
+
+
+def _key_identity(key: Any) -> str | None:
+    """Best-effort identity of a key event as a bare name or char.
+
+    A pynput ``Key`` exposes ``.name`` (``"ctrl"``, ``"space"``); a ``KeyCode``
+    exposes ``.char`` (``"m"``). A plain string (test path) is returned bare.
+    """
+    name = getattr(key, "name", None)
+    if isinstance(name, str):
+        return name
+    char = getattr(key, "char", None)
+    if isinstance(char, str):
+        return char
+    if isinstance(key, str):
+        return key.strip("<>")
+    return None
+
+
+def _should_suppress_key(key: Any, chord_keys: frozenset[str]) -> bool:
+    """Whether an event for *key* should be hidden from other applications.
+
+    Suppress iff the key belongs to the push-to-talk chord; anything else —
+    ordinary typing — passes through untouched (issue #11).
+    """
+    identity = _key_identity(key)
+    return identity is not None and identity in chord_keys
+
+
+# macOS virtual keycodes for the keys we may need to identify from a raw
+# CGEvent (character-less events like modifiers and space). Only the keys that
+# can appear in a push-to-talk chord are mapped.
+_DARWIN_KEYCODE_NAMES: dict[int, str] = {
+    49: "space",
+    48: "tab",
+    36: "enter",
+    53: "esc",
+    56: "shift_l",
+    60: "shift_r",
+    59: "ctrl_l",
+    62: "ctrl_r",
+    58: "alt_l",
+    61: "alt_r",
+    55: "cmd_l",
+    54: "cmd_r",
+}
+
+
+def _darwin_event_identity(event: Any) -> str | None:
+    """Best-effort key identity for a macOS CGEvent (issue #11).
+
+    Tries the produced Unicode character first (covers letter/space triggers),
+    then falls back to the virtual keycode for character-less keys such as
+    modifiers. Returns ``None`` when the event cannot be identified, so the
+    caller passes it through rather than risk suppressing unknown input.
+    """
+    import Quartz
+
+    keycode = int(Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode))
+    named = _DARWIN_KEYCODE_NAMES.get(keycode)
+    if named is not None:
+        return named
+    length, chars = Quartz.CGEventKeyboardGetUnicodeString(event, 4, None, None)
+    if length > 0 and chars:
+        char = str(chars[0])
+        if char == " ":
+            return "space"
+        if char.isprintable() and not char.isspace():
+            return char.lower()
+    return None
+
+
 class PynputHotkeyProvider:
     """Push-to-talk hotkey listener backed by ``pynput``.
 
@@ -130,6 +227,7 @@ class PynputHotkeyProvider:
         self._ptt_key = select_push_to_talk(config)
         # The non-modifier trigger key whose release ends a hold (issue #10).
         self._ptt_trigger = _trigger_token(self._ptt_key)
+        self._chord_keys = _chord_key_names(self._ptt_key)
         self._cancel_key = config.cancel
         self._on_press_cb: Callable[[], None] = lambda: None
         self._on_release_cb: Callable[[], None] = lambda: None
@@ -186,10 +284,18 @@ class PynputHotkeyProvider:
                     return
                 self._on_ptt_release()
 
-            listener = keyboard.Listener(
-                on_press=_on_key_press,
-                on_release=_on_key_release,
-            )
+            # On macOS, suppress ONLY the PTT chord keys so they never leak to
+            # the focused application (issue #11). A blunt suppress=True would
+            # swallow all typing and risk locking the keyboard, so we intercept
+            # per-event and pass everything that is not part of the chord.
+            listener_kwargs: dict[str, Any] = {
+                "on_press": _on_key_press,
+                "on_release": _on_key_release,
+            }
+            if sys.platform == "darwin":
+                listener_kwargs["darwin_intercept"] = self._make_darwin_intercept()
+
+            listener = keyboard.Listener(**listener_kwargs)
             listener.start()
             self._listener = listener
         except Exception as exc:  # noqa: BLE001
@@ -214,6 +320,28 @@ class PynputHotkeyProvider:
             if listener is not None:
                 with contextlib.suppress(Exception):
                     listener.stop()
+
+    def _make_darwin_intercept(self) -> Callable[[Any, Any], Any]:
+        """Build a macOS ``darwin_intercept`` that hides only the PTT chord.
+
+        The interceptor returns ``None`` to swallow an event (so it never
+        reaches the focused application) or the event itself to pass it
+        through. It suppresses only keys that belong to the configured chord
+        (issue #11). Any error resolves to passing the event through — we never
+        risk swallowing the user's whole keyboard.
+        """
+        chord_keys = self._chord_keys
+
+        def _intercept(event_type: Any, event: Any) -> Any:
+            try:
+                identity = _darwin_event_identity(event)
+            except Exception:  # noqa: BLE001 - never let interception raise
+                return event
+            if identity is not None and _should_suppress_key(identity, chord_keys):
+                return None
+            return event
+
+        return _intercept
 
     # ------------------------------------------------------------------
     # Internal callbacks (also called directly by tests)

@@ -112,6 +112,7 @@ no_implicit_optional = true
 module = [
   "sounddevice.*",
   "pynput.*",
+  "Quartz.*",
   "pyperclip.*",
   "faster_whisper.*",
   "ctranslate2.*",

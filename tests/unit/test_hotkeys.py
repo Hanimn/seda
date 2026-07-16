@@ -216,6 +216,92 @@ class TestPynputHotkeyProviderReleaseKey:
         assert release_calls == [None]
 
 
+class TestKeySuppressionDecision:
+    """Which key events get hidden from the focused app (issue #11)."""
+
+    def test_chord_key_names_expands_modifier_aliases(self) -> None:
+        from local_flow.input.hotkeys import _chord_key_names
+
+        names = _chord_key_names("<ctrl>+<shift>+space")
+        # Base modifiers expand to their left/right variants.
+        assert "ctrl" in names and "ctrl_l" in names and "ctrl_r" in names
+        assert "shift" in names and "shift_l" in names and "shift_r" in names
+        assert "space" in names
+
+    def test_suppress_chord_keys(self) -> None:
+        from local_flow.input.hotkeys import _chord_key_names, _should_suppress_key
+
+        chord = _chord_key_names("<ctrl>+<shift>+space")
+        assert _should_suppress_key("space", chord) is True
+        assert _should_suppress_key("ctrl_l", chord) is True  # live left-variant
+        assert _should_suppress_key("shift", chord) is True
+
+    def test_do_not_suppress_unrelated_keys(self) -> None:
+        from local_flow.input.hotkeys import _chord_key_names, _should_suppress_key
+
+        chord = _chord_key_names("<ctrl>+<shift>+space")
+        # Ordinary typing must pass through untouched.
+        assert _should_suppress_key("a", chord) is False
+        assert _should_suppress_key("enter", chord) is False
+        assert _should_suppress_key("cmd", chord) is False  # not in this chord
+
+    def test_suppress_handles_keycode_char_and_key_name(self) -> None:
+        from local_flow.input.hotkeys import _chord_key_names, _should_suppress_key
+
+        chord = _chord_key_names("<ctrl>+m")  # trigger is a char key
+
+        class _FakeKeyCode:
+            name = None
+            char = "m"
+
+        class _FakeKey:
+            name = "ctrl_r"
+            char = None
+
+        assert _should_suppress_key(_FakeKeyCode(), chord) is True
+        assert _should_suppress_key(_FakeKey(), chord) is True
+
+        class _OtherChar:
+            name = None
+            char = "z"
+
+        assert _should_suppress_key(_OtherChar(), chord) is False
+
+
+class TestDarwinIntercept:
+    """The macOS interceptor swallows only chord keys, passes the rest (#11)."""
+
+    def test_intercept_suppresses_chord_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider, _, _ = _build_provider(monkeypatch)
+        intercept = provider._make_darwin_intercept()
+        # Fake the native identity extraction: this event is the trigger 'space'.
+        monkeypatch.setattr("local_flow.input.hotkeys._darwin_event_identity", lambda e: "space")
+        # Returning None means the event is swallowed (not delivered to the app).
+        assert intercept("keydown", object()) is None
+
+    def test_intercept_passes_unrelated_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider, _, _ = _build_provider(monkeypatch)
+        intercept = provider._make_darwin_intercept()
+        monkeypatch.setattr("local_flow.input.hotkeys._darwin_event_identity", lambda e: "a")
+        sentinel = object()
+        # Ordinary typing passes through unchanged.
+        assert intercept("keydown", sentinel) is sentinel
+
+    def test_intercept_passes_event_when_identity_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider, _, _ = _build_provider(monkeypatch)
+        intercept = provider._make_darwin_intercept()
+
+        def _boom(_event: object) -> str:
+            raise RuntimeError("Quartz unavailable")
+
+        monkeypatch.setattr("local_flow.input.hotkeys._darwin_event_identity", _boom)
+        sentinel = object()
+        # Fail open: never swallow input we could not identify.
+        assert intercept("keydown", sentinel) is sentinel
+
+
 class TestPynputHotkeyProviderStop:
     def test_stop_calls_underlying_stop_on_both_listeners(
         self, monkeypatch: pytest.MonkeyPatch
