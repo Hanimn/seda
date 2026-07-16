@@ -190,6 +190,19 @@ class CleanupConfig(_Section):
         return self
 
 
+class ApplicationOverride(_Section):
+    """A per-application paste shortcut override (§16 "Application-specific overrides").
+
+    When the active application matches ``application`` (case-insensitive prefix
+    match), the configured ``shortcut`` is used instead of the platform default.
+    Application detection is best-effort and isolated — it never blocks paste if
+    the active application cannot be determined.
+    """
+
+    application: str
+    shortcut: str
+
+
 class PasteConfig(_Section):
     method: Literal["clipboard", "type"] = "clipboard"
     terminal_shortcut: str = "auto"
@@ -207,6 +220,10 @@ class PasteConfig(_Section):
     shortcut_windows: str = "ctrl+v"
     shortcut_linux_gui: str = "ctrl+v"
     shortcut_linux_terminal: str = "ctrl+shift+v"
+    # Per-application paste shortcuts (§16 "Application-specific overrides").
+    # Best-effort: when the active application name matches an entry (case-
+    # insensitive prefix), that shortcut is used over the platform default.
+    application_overrides: list[ApplicationOverride] = Field(default_factory=list)
     # SAFETY: automatic submission (pressing Enter) is not implemented in this
     # release. The field exists so the schema is stable, but any true value is
     # rejected in the validator below.
@@ -448,12 +465,24 @@ def _render_table(name: str, table: dict[str, Any]) -> str:
     for key, value in table.items():
         if isinstance(value, dict):
             subtables.append(_render_table(f"{name}.{key}", value))
+        elif isinstance(value, list) and value and isinstance(value[0], dict):
+            # Array of tables (e.g. [[paste.application_overrides]]).
+            for item in value:
+                subtables.append(_render_array_table(f"{name}.{key}", item))
         else:
             lines.append(f"{key} = {_toml_value(value)}")
     block = "\n".join(lines)
     if subtables:
         block = block + "\n\n" + "\n\n".join(subtables)
     return block
+
+
+def _render_array_table(name: str, table: dict[str, Any]) -> str:
+    """Render one entry in a TOML array-of-tables (``[[name]]``)."""
+    lines = [f"[[{name}]]"]
+    for key, value in table.items():
+        lines.append(f"{key} = {_toml_value(value)}")
+    return "\n".join(lines)
 
 
 def _toml_value(value: Any) -> str:

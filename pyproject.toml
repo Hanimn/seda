@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "local-flow"
-version = "0.0.0"
+version = "0.1.0"
 description = "Local-first, system-wide voice dictation optimized for dictating prompts into terminal applications."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -58,6 +58,20 @@ Repository = "https://github.com/Hanimn/seda"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/local_flow"]
+
+[tool.hatch.build.targets.sdist]
+# Exclude files that must not be bundled in a distributable source archive.
+# User config, models, audio, and caches live in platformdirs at runtime and
+# are never checked in; these additional excludes prevent large/internal files
+# from being picked up when building from a development checkout (§38, §39).
+exclude = [
+  "IMPLEMENTATION_PLAN.md",
+  ".claude/**",
+  ".github/**",
+  "uv.lock",
+  ".scratch/**",
+  "docs/agents/**",
+]
 
 [tool.ruff]
 line-length = 100

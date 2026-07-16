@@ -16,6 +16,7 @@ import contextlib
 import logging
 import signal
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
@@ -245,6 +246,7 @@ class AppController:
     # ------------------------------------------------------------------
 
     def _process_audio(self, audio: RecordedAudio) -> None:
+        cycle_start = time.monotonic()
         try:
             self._state_machine.transition(AppState.TRANSCRIBING)
         except InvalidTransitionError:
@@ -255,6 +257,7 @@ class AppController:
             duration_seconds=audio.duration_seconds,
         )
 
+        t0 = time.monotonic()
         try:
             result = self._backend.transcribe(audio.samples, audio.sample_rate)
         except LocalFlowError as exc:
@@ -264,14 +267,27 @@ class AppController:
                 self._notifier.notify(NotificationEvent.ERROR)
                 self._state_machine.transition(AppState.IDLE)
             return
+        t_transcribe = time.monotonic() - t0
+        # Aggregate timing — available in debug mode (§25 "Expose aggregate
+        # timing in debug mode"); never contains transcript content.
+        logger.debug(
+            "perf: audio=%.2fs transcribe=%.2fs chars=%d",
+            audio.duration_seconds,
+            t_transcribe,
+            len(result.text),
+        )
 
         # Deterministic text processing (Phase 4): spoken commands, technical
         # token protection, filler handling, normalization. A beginning-of-
         # transcript "cancel" command discards the dictation entirely.
+        t0 = time.monotonic()
         pipeline = process_transcript(
             result.text,
             mode=self._config.app.mode,
             spoken_commands_enabled=self._config.text.spoken_commands_enabled,
+        )
+        logger.debug(
+            "perf: pipeline=%.3fs commands=%d", time.monotonic() - t0, pipeline.commands_applied
         )
 
         if pipeline.cancelled:
@@ -293,7 +309,9 @@ class AppController:
         # Optional LLM cleanup (Phase 6). Fail-open: any error or rejected
         # output falls back to the deterministic transcript so a successful
         # transcription is never lost. Bypassed entirely in literal mode.
+        t0 = time.monotonic()
         final_text = self._maybe_clean(pipeline)
+        logger.debug("perf: cleanup=%.3fs", time.monotonic() - t0)
 
         # Insert the text at the cursor (Phase 5). Insertion never presses
         # Enter; a paste failure leaves the transcript on the clipboard.
@@ -302,7 +320,9 @@ class AppController:
         except InvalidTransitionError:
             return
 
+        t0 = time.monotonic()
         insertion = self._inserter.insert(final_text, copy_only=self._copy_only)
+        t_paste = time.monotonic() - t0
 
         if insertion.error is not None:
             # §16 paste failure: transcript is on the clipboard; notify without
@@ -313,6 +333,11 @@ class AppController:
             self._notifier.notify(
                 NotificationEvent.SUCCESS,
                 char_count=len(final_text),
+            )
+            logger.debug(
+                "perf: paste=%.3fs total=%.2fs",
+                t_paste,
+                time.monotonic() - cycle_start,
             )
 
         with contextlib.suppress(InvalidTransitionError):
@@ -397,7 +422,8 @@ class AppController:
             self._cleanup_counters.validation_failures += 1
             logger.info("cleanup rejected (%s); using deterministic transcript", metrics.validation)
         # Aggregate metrics only — never the transcript or model output (§15).
-        logger.info(
+        # Logged at DEBUG so they only appear when log_level is DEBUG (§25).
+        logger.debug(
             "cleanup metrics: in_chars=%d out_chars=%d edit_ratio=%.2f placeholders=%d result=%s",
             metrics.input_chars,
             metrics.output_chars,

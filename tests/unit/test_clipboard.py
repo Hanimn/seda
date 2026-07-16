@@ -367,4 +367,35 @@ class TestSelectShortcut:
         cfg = PasteConfig(shortcut_macos="cmd+shift+v")
         assert select_shortcut(cfg, platform="darwin") == "cmd+shift+v"
 
+    def test_application_override_wins_over_platform_default(self) -> None:
+        from local_flow.config import ApplicationOverride, PasteConfig
+
+        cfg = PasteConfig(
+            application_overrides=[
+                ApplicationOverride(application="iTerm2", shortcut="cmd+v"),
+                ApplicationOverride(application="Windows Terminal", shortcut="ctrl+shift+v"),
+            ]
+        )
+        assert select_shortcut(cfg, platform="darwin", active_app="iTerm2") == "cmd+v"
+        assert (
+            select_shortcut(cfg, platform="win32", active_app="Windows Terminal")
+            == "ctrl+shift+v"
+        )
+
+    def test_no_match_falls_back_to_platform(self) -> None:
+        from local_flow.config import ApplicationOverride, PasteConfig
+
+        cfg = PasteConfig(
+            application_overrides=[
+                ApplicationOverride(application="iTerm2", shortcut="ctrl+v"),
+            ]
+        )
+        # "Code" doesn't match — falls back to platform default.
+        assert select_shortcut(cfg, platform="darwin", active_app="Code") == "cmd+v"
+
+    def test_unknown_active_app_falls_back_to_platform(self) -> None:
+        from local_flow.config import PasteConfig
+
+        assert select_shortcut(PasteConfig(), platform="darwin", active_app=None) == "cmd+v"
+
 

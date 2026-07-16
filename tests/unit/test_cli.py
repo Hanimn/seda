@@ -7,6 +7,7 @@ touched.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -143,7 +144,9 @@ def test_run_no_paste_flag_sets_copy_only(
 def test_run_help_documents_no_paste() -> None:
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "no-paste" in result.output
+    # Strip ANSI escape codes before asserting on the option text.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "no-paste" in plain
 
 
 def test_run_no_cleanup_flag_force_disables_cleanup(
@@ -197,7 +200,8 @@ def test_run_without_no_cleanup_leaves_cleanup_to_config(
 def test_run_help_documents_no_cleanup() -> None:
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "no-cleanup" in result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "no-cleanup" in plain
 
 
 # --- transcribe (Phase 1) ---------------------------------------------------

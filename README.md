@@ -4,13 +4,12 @@ Local-first, system-wide voice dictation — optimized for dictating prompts int
 Claude Code and other terminal applications. Hold a global push-to-talk hotkey,
 speak, release, and get **editable** text at your cursor.
 
-> **Status:** MVP complete (Phases 0–5). Implemented: the project skeleton
-> (configuration, logging, diagnostics, CLI), **file transcription** via a
-> local `faster-whisper` model (`local-flow transcribe FILE`), microphone
-> capture, global push-to-talk hotkeys, deterministic text processing, and
-> **clipboard paste at the cursor** (`local-flow run`). Optional LLM cleanup and
-> platform hardening are the next phases. See
-> [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the full roadmap.
+> **Status:** v0.1.0 release candidate — all 8 phases complete. Implemented: the
+> project skeleton, local `faster-whisper` transcription, microphone capture,
+> global push-to-talk hotkeys, deterministic text processing (spoken commands,
+> technical-token protection), clipboard paste at the cursor, optional local LLM
+> cleanup (Ollama), and full diagnostics and packaging.
+> See [`CHANGELOG.md`](CHANGELOG.md) for the complete history.
 
 ## Safety and privacy
 
@@ -113,6 +112,16 @@ fully-commented starting point. Default location:
 - Windows: `%APPDATA%\local-flow\config.toml`
 
 Override with `local-flow run --config /path/to/config.toml`.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | State machine, data flow, thread model, backend interfaces, privacy boundaries |
+| [`docs/PRIVACY.md`](docs/PRIVACY.md) | What stays local, when network access occurs, clipboard limitations |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Microphone, model, hotkey, paste, Wayland, Ollama issues |
+| [`docs/CLAUDE_CODE_USAGE.md`](docs/CLAUDE_CODE_USAGE.md) | Prompt styles, spoken commands, modes, multiline policy |
+| [`CHANGELOG.md`](CHANGELOG.md) | Version history and known limitations |
 
 ## Development
 

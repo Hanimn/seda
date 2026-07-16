@@ -250,6 +250,70 @@ def test_non_writable_debug_audio_dir_is_rejected_when_enabled(tmp_path: Path) -
         readonly.chmod(stat.S_IRWXU)  # restore so tmp cleanup can remove it
 
 
+def test_application_overrides_accepted() -> None:
+    config = load_config_from_dict(
+        {
+            "paste": {
+                "application_overrides": [
+                    {"application": "iTerm2", "shortcut": "cmd+v"},
+                    {"application": "Windows Terminal", "shortcut": "ctrl+shift+v"},
+                ]
+            }
+        }
+    )
+    overrides = config.paste.application_overrides
+    assert len(overrides) == 2
+    assert overrides[0].application == "iTerm2"
+    assert overrides[0].shortcut == "cmd+v"
+    assert overrides[1].application == "Windows Terminal"
+    assert overrides[1].shortcut == "ctrl+shift+v"
+
+
+def test_application_overrides_default_empty() -> None:
+    config = load_config_from_dict({})
+    assert config.paste.application_overrides == []
+
+
+def test_application_overrides_render_as_toml() -> None:
+    from local_flow.config import render_toml
+
+    config = load_config_from_dict(
+        {
+            "paste": {
+                "application_overrides": [
+                    {"application": "iTerm2", "shortcut": "cmd+v"},
+                ]
+            }
+        }
+    )
+    toml = render_toml(config)
+    assert "iTerm2" in toml
+    assert "cmd+v" in toml
+
+
+def test_application_overrides_round_trip_through_toml() -> None:
+    """Rendered TOML can be re-parsed and produces identical config."""
+    import tomllib
+
+    from local_flow.config import render_toml
+
+    original = load_config_from_dict(
+        {
+            "paste": {
+                "application_overrides": [
+                    {"application": "iTerm2", "shortcut": "cmd+v"},
+                    {"application": "Windows Terminal", "shortcut": "ctrl+shift+v"},
+                ]
+            }
+        }
+    )
+    rendered = render_toml(original)
+    # The rendered TOML must be valid and parse back to the same values.
+    reparsed_data = tomllib.loads(rendered)
+    reparsed = load_config_from_dict(reparsed_data)
+    assert reparsed.paste.application_overrides == original.paste.application_overrides
+
+
 def test_effective_config_is_json_serializable() -> None:
     import json
 

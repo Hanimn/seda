@@ -98,6 +98,18 @@ shortcut_macos = "cmd+v"
 shortcut_windows = "ctrl+v"
 shortcut_linux_gui = "ctrl+v"
 shortcut_linux_terminal = "ctrl+shift+v"
+# Per-application paste shortcut overrides (§16). When the active application
+# name matches "application" (case-insensitive prefix), the override shortcut
+# is used. Application detection is best-effort; no-match falls back to the
+# platform default. Examples — uncomment and adapt as needed:
+#
+# [[paste.application_overrides]]
+# application = "iTerm2"
+# shortcut = "cmd+v"
+#
+# [[paste.application_overrides]]
+# application = "Windows Terminal"
+# shortcut = "ctrl+shift+v"
 # SAFETY: must be false. Automatic submission (pressing Enter) is not
 # implemented in this release; a config that sets this to true is rejected.
 auto_submit = false

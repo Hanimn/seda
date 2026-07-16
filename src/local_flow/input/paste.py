@@ -52,13 +52,30 @@ __all__ = [
 MultilinePolicy = Literal["preserve", "flatten", "copy_only"]
 
 
-def select_shortcut(config: PasteConfig, *, platform: str | None = None) -> str:
+def select_shortcut(
+    config: PasteConfig,
+    *,
+    platform: str | None = None,
+    active_app: str | None = None,
+) -> str:
     """Return the paste shortcut for the current platform (§16).
 
-    ``platform`` defaults to :data:`sys.platform`.  On Linux the GUI shortcut
-    is used; reliable terminal detection is deferred to Phase 7, at which point
-    an application override can select ``shortcut_linux_terminal``.
+    ``platform`` defaults to :data:`sys.platform`.  If ``active_app`` is given
+    and matches a configured ``application_override`` entry (case-insensitive
+    prefix match), that shortcut takes priority over the platform default.
+    Application detection is best-effort and isolated: when the active
+    application is unknown or there is no matching override, the platform
+    default is used.  On Linux the GUI shortcut is used as the fallback;
+    reliable terminal detection deferred to Phase 7 application overrides.
     """
+    # Application-specific override takes priority (§16 "Application-specific
+    # overrides"). Best-effort case-insensitive prefix match.
+    if active_app and config.application_overrides:
+        active_lower = active_app.lower()
+        for override in config.application_overrides:
+            if active_lower.startswith(override.application.lower()):
+                return override.shortcut
+
     plat = platform if platform is not None else sys.platform
     if plat == "darwin":
         return config.shortcut_macos
