@@ -43,11 +43,11 @@ pip install -e ".[dev]"
 local-flow doctor
 ```
 
-Later phases add the speech backend:
+The speech backend and optional cleanup are separate extras:
 
 ```bash
 uv sync --extra whisper --extra dev
-uv run local-flow models download small.en   # (available from Phase 1)
+uv run local-flow models download small.en
 ```
 
 ## CLI
@@ -64,7 +64,7 @@ local-flow doctor               # environment + config diagnostics
 local-flow doctor --json        # machine-readable diagnostics
 ```
 
-File transcription (Phase 1) — needs the `whisper` extra and a local model:
+File transcription — needs the `whisper` extra and a local model:
 
 ```bash
 local-flow models recommend         # list recommended models
@@ -75,12 +75,13 @@ local-flow transcribe recording.wav --copy      # copy the transcript to the cli
 local-flow transcribe recording.wav --offline   # require a local model; never download
 ```
 
-Push-to-talk dictation (Phases 2–5) — hold the hotkey, speak, release, and the
+Push-to-talk dictation — hold the hotkey, speak, release, and the
 transcript is pasted at your cursor:
 
 ```bash
 local-flow run                  # start the push-to-talk loop
 local-flow run --no-paste       # copy the transcript instead of pasting it
+local-flow run --no-cleanup     # disable optional LLM cleanup for this run
 local-flow devices              # list microphone input devices
 local-flow test-mic             # record a short sample and report levels
 ```
