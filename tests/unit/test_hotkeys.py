@@ -217,74 +217,92 @@ class TestPynputHotkeyProviderReleaseKey:
 
 
 class TestKeySuppressionDecision:
-    """Which key events get hidden from the focused app (issue #11)."""
+    """Which key events belong to the chord and get gated (issues #11, #12)."""
 
     def test_chord_key_names_expands_modifier_aliases(self) -> None:
         from local_flow.input.hotkeys import _chord_key_names
 
         names = _chord_key_names("<ctrl>+<shift>+space")
-        # Base modifiers expand to their left/right variants.
         assert "ctrl" in names and "ctrl_l" in names and "ctrl_r" in names
         assert "shift" in names and "shift_l" in names and "shift_r" in names
         assert "space" in names
 
-    def test_suppress_chord_keys(self) -> None:
-        from local_flow.input.hotkeys import _chord_key_names, _should_suppress_key
+    def test_chord_modifier_names_excludes_trigger(self) -> None:
+        from local_flow.input.hotkeys import _chord_modifier_names
 
-        chord = _chord_key_names("<ctrl>+<shift>+space")
-        assert _should_suppress_key("space", chord) is True
-        assert _should_suppress_key("ctrl_l", chord) is True  # live left-variant
-        assert _should_suppress_key("shift", chord) is True
+        mods = _chord_modifier_names("<ctrl>+<shift>+space")
+        assert "ctrl_l" in mods and "shift_r" in mods
+        assert "space" not in mods
 
-    def test_do_not_suppress_unrelated_keys(self) -> None:
-        from local_flow.input.hotkeys import _chord_key_names, _should_suppress_key
 
-        chord = _chord_key_names("<ctrl>+<shift>+space")
-        # Ordinary typing must pass through untouched.
-        assert _should_suppress_key("a", chord) is False
-        assert _should_suppress_key("enter", chord) is False
-        assert _should_suppress_key("cmd", chord) is False  # not in this chord
+class TestChordSuppressor:
+    """Only suppress chord keys while the chord is engaged (issue #12)."""
 
-    def test_suppress_handles_keycode_char_and_key_name(self) -> None:
-        from local_flow.input.hotkeys import _chord_key_names, _should_suppress_key
+    def _make(self) -> object:
+        from local_flow.input.hotkeys import (
+            _chord_key_names,
+            _chord_modifier_names,
+            _ChordSuppressor,
+        )
 
-        chord = _chord_key_names("<ctrl>+m")  # trigger is a char key
+        chord = "<ctrl>+<shift>+space"
+        return _ChordSuppressor(_chord_key_names(chord), _chord_modifier_names(chord))
 
-        class _FakeKeyCode:
-            name = None
-            char = "m"
+    def test_bare_trigger_when_idle_passes_through(self) -> None:
+        # The regression: space alone, no modifiers held, must NOT be suppressed.
+        s = self._make()
+        assert s.should_suppress("space", modifiers_held=False) is False
 
-        class _FakeKey:
-            name = "ctrl_r"
-            char = None
+    def test_trigger_while_modifier_held_is_suppressed(self) -> None:
+        s = self._make()
+        assert s.should_suppress("space", modifiers_held=True) is True
 
-        assert _should_suppress_key(_FakeKeyCode(), chord) is True
-        assert _should_suppress_key(_FakeKey(), chord) is True
+    def test_chord_modifier_is_suppressed(self) -> None:
+        s = self._make()
+        # A chord modifier is how the chord is composed — always suppressed.
+        assert s.should_suppress("ctrl_l", modifiers_held=True) is True
+        assert s.should_suppress("shift", modifiers_held=False) is True
 
-        class _OtherChar:
-            name = None
-            char = "z"
-
-        assert _should_suppress_key(_OtherChar(), chord) is False
+    def test_unrelated_key_never_suppressed(self) -> None:
+        s = self._make()
+        assert s.should_suppress("a", modifiers_held=True) is False
+        assert s.should_suppress("enter", modifiers_held=True) is False
+        assert s.should_suppress(None, modifiers_held=True) is False
 
 
 class TestDarwinIntercept:
-    """The macOS interceptor swallows only chord keys, passes the rest (#11)."""
+    """The macOS interceptor gates on identity + modifier state (#11, #12)."""
 
-    def test_intercept_suppresses_chord_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _patch_native(
+        self, monkeypatch: pytest.MonkeyPatch, *, identity: object, modifiers_held: bool
+    ) -> None:
+        monkeypatch.setattr("local_flow.input.hotkeys._darwin_event_identity", lambda e: identity)
+        monkeypatch.setattr(
+            "local_flow.input.hotkeys._darwin_chord_modifiers_held",
+            lambda e, m: modifiers_held,
+        )
+
+    def test_intercept_suppresses_trigger_during_hold(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         provider, _, _ = _build_provider(monkeypatch)
         intercept = provider._make_darwin_intercept()
-        # Fake the native identity extraction: this event is the trigger 'space'.
-        monkeypatch.setattr("local_flow.input.hotkeys._darwin_event_identity", lambda e: "space")
-        # Returning None means the event is swallowed (not delivered to the app).
+        self._patch_native(monkeypatch, identity="space", modifiers_held=True)
         assert intercept("keydown", object()) is None
+
+    def test_intercept_passes_bare_trigger_when_idle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The #12 regression case: space with no chord modifier held.
+        provider, _, _ = _build_provider(monkeypatch)
+        intercept = provider._make_darwin_intercept()
+        self._patch_native(monkeypatch, identity="space", modifiers_held=False)
+        sentinel = object()
+        assert intercept("keydown", sentinel) is sentinel
 
     def test_intercept_passes_unrelated_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         provider, _, _ = _build_provider(monkeypatch)
         intercept = provider._make_darwin_intercept()
-        monkeypatch.setattr("local_flow.input.hotkeys._darwin_event_identity", lambda e: "a")
+        self._patch_native(monkeypatch, identity="a", modifiers_held=True)
         sentinel = object()
-        # Ordinary typing passes through unchanged.
         assert intercept("keydown", sentinel) is sentinel
 
     def test_intercept_passes_event_when_identity_raises(

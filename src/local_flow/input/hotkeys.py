@@ -139,31 +139,51 @@ def _chord_key_names(hotkey: str) -> frozenset[str]:
     return frozenset(names)
 
 
-def _key_identity(key: Any) -> str | None:
-    """Best-effort identity of a key event as a bare name or char.
+def _chord_modifier_names(hotkey: str) -> frozenset[str]:
+    """Return the modifier key names of *hotkey*, expanded for aliases.
 
-    A pynput ``Key`` exposes ``.name`` (``"ctrl"``, ``"space"``); a ``KeyCode``
-    exposes ``.char`` (``"m"``). A plain string (test path) is returned bare.
+    ``"<ctrl>+<shift>+space"`` → ``{ctrl, ctrl_l, ctrl_r, shift, shift_l,
+    shift_r}`` (no ``space``). Used to know when a chord is "being composed"
+    (issue #12).
     """
-    name = getattr(key, "name", None)
-    if isinstance(name, str):
-        return name
-    char = getattr(key, "char", None)
-    if isinstance(char, str):
-        return char
-    if isinstance(key, str):
-        return key.strip("<>")
-    return None
+    names: set[str] = set()
+    for token in hotkey.split("+"):
+        bare = token.strip().strip("<>")
+        if bare in _MODIFIER_ALIASES:
+            names |= _MODIFIER_ALIASES[bare]
+    return frozenset(names)
 
 
-def _should_suppress_key(key: Any, chord_keys: frozenset[str]) -> bool:
-    """Whether an event for *key* should be hidden from other applications.
+class _ChordSuppressor:
+    """Decides whether a key event should be hidden from other applications.
 
-    Suppress iff the key belongs to the push-to-talk chord; anything else —
-    ordinary typing — passes through untouched (issue #11).
+    Only suppresses the push-to-talk chord keys **while the chord is engaged** —
+    i.e. while the chord's modifiers are currently held. When idle, every key
+    (including the trigger, e.g. space) passes through untouched (issue #12),
+    so ordinary typing keeps working system-wide while ``run`` is active.
+
+    The decision is stateless: the caller supplies which chord modifiers are
+    currently held (read from the OS event's modifier flags), so there is no
+    keydown/keyup bookkeeping to drift out of sync.
     """
-    identity = _key_identity(key)
-    return identity is not None and identity in chord_keys
+
+    def __init__(self, chord_keys: frozenset[str], chord_modifiers: frozenset[str]) -> None:
+        self._chord_keys = chord_keys
+        self._chord_modifiers = chord_modifiers
+
+    def should_suppress(self, identity: str | None, *, modifiers_held: bool) -> bool:
+        """Suppress iff *identity* is a chord key and the chord is engaged.
+
+        ``modifiers_held`` is True when at least one of the chord's modifiers is
+        currently down. A chord modifier is always suppressed (pressing it is
+        how the user composes the chord); the trigger is suppressed only while a
+        chord modifier is held, so a bare trigger keypress passes through.
+        """
+        if identity is None or identity not in self._chord_keys:
+            return False
+        if identity in self._chord_modifiers:
+            return True
+        return modifiers_held
 
 
 # macOS virtual keycodes for the keys we may need to identify from a raw
@@ -209,6 +229,28 @@ def _darwin_event_identity(event: Any) -> str | None:
     return None
 
 
+# Quartz modifier flag → the modifier base-name aliases it represents.
+def _darwin_chord_modifiers_held(event: Any, chord_modifiers: frozenset[str]) -> bool:
+    """Whether any of *chord_modifiers* is currently held, per the event flags.
+
+    Reads the CGEvent's modifier-flag mask so the suppression decision does not
+    depend on keydown/keyup bookkeeping (issue #12).
+    """
+    import Quartz
+
+    flags = int(Quartz.CGEventGetFlags(event))
+    flag_names = {
+        Quartz.kCGEventFlagMaskControl: ("ctrl", "ctrl_l", "ctrl_r"),
+        Quartz.kCGEventFlagMaskShift: ("shift", "shift_l", "shift_r"),
+        Quartz.kCGEventFlagMaskAlternate: ("alt", "alt_l", "alt_r", "alt_gr"),
+        Quartz.kCGEventFlagMaskCommand: ("cmd", "cmd_l", "cmd_r"),
+    }
+    for mask, names in flag_names.items():
+        if flags & mask and any(n in chord_modifiers for n in names):
+            return True
+    return False
+
+
 class PynputHotkeyProvider:
     """Push-to-talk hotkey listener backed by ``pynput``.
 
@@ -228,6 +270,7 @@ class PynputHotkeyProvider:
         # The non-modifier trigger key whose release ends a hold (issue #10).
         self._ptt_trigger = _trigger_token(self._ptt_key)
         self._chord_keys = _chord_key_names(self._ptt_key)
+        self._suppressor = _ChordSuppressor(self._chord_keys, _chord_modifier_names(self._ptt_key))
         self._cancel_key = config.cancel
         self._on_press_cb: Callable[[], None] = lambda: None
         self._on_release_cb: Callable[[], None] = lambda: None
@@ -326,18 +369,20 @@ class PynputHotkeyProvider:
 
         The interceptor returns ``None`` to swallow an event (so it never
         reaches the focused application) or the event itself to pass it
-        through. It suppresses only keys that belong to the configured chord
-        (issue #11). Any error resolves to passing the event through — we never
-        risk swallowing the user's whole keyboard.
+        through. It suppresses chord keys only while the chord is engaged
+        (issues #11, #12). Any error resolves to passing the event through — we
+        never risk swallowing the user's whole keyboard.
         """
-        chord_keys = self._chord_keys
+        suppressor = self._suppressor
+        chord_modifiers = _chord_modifier_names(self._ptt_key)
 
         def _intercept(event_type: Any, event: Any) -> Any:
             try:
                 identity = _darwin_event_identity(event)
+                modifiers_held = _darwin_chord_modifiers_held(event, chord_modifiers)
             except Exception:  # noqa: BLE001 - never let interception raise
                 return event
-            if identity is not None and _should_suppress_key(identity, chord_keys):
+            if suppressor.should_suppress(identity, modifiers_held=modifiers_held):
                 return None
             return event
 
