@@ -21,7 +21,7 @@ import threading
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from local_flow.config import HotkeysConfig
+from local_flow.config import HotkeysConfig, select_push_to_talk
 from local_flow.errors import HotkeyError
 
 
@@ -70,7 +70,8 @@ class PynputHotkeyProvider:
     """
 
     def __init__(self, config: HotkeysConfig) -> None:
-        self._ptt_key = config.push_to_talk
+        # Resolve the platform-appropriate push-to-talk chord (issue #9).
+        self._ptt_key = select_push_to_talk(config)
         self._cancel_key = config.cancel
         self._on_press_cb: Callable[[], None] = lambda: None
         self._on_release_cb: Callable[[], None] = lambda: None

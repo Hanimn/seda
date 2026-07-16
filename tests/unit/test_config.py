@@ -90,7 +90,6 @@ def test_negative_duration_is_rejected() -> None:
 @pytest.mark.parametrize(
     "hotkey",
     [
-        "",
         "<ctrl>+",
         "<ctrl>+notakey",
         "<>+a",
@@ -101,6 +100,14 @@ def test_invalid_hotkey_is_rejected(hotkey: str) -> None:
     with pytest.raises(ConfigError) as exc:
         load_config_from_dict({"hotkeys": {"push_to_talk": hotkey}})
     assert "hotkeys.push_to_talk" in str(exc.value)
+
+
+def test_empty_per_platform_hotkey_is_rejected() -> None:
+    # The per-platform default fields must be real hotkeys — only the
+    # override field (push_to_talk / toggle_mode) may be empty.
+    with pytest.raises(ConfigError) as exc:
+        load_config_from_dict({"hotkeys": {"push_to_talk_macos": ""}})
+    assert "hotkeys.push_to_talk_macos" in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -248,6 +255,62 @@ def test_non_writable_debug_audio_dir_is_rejected_when_enabled(tmp_path: Path) -
         assert "not writable" in str(exc.value)
     finally:
         readonly.chmod(stat.S_IRWXU)  # restore so tmp cleanup can remove it
+
+
+class TestSelectPushToTalk:
+    """Platform-aware push-to-talk selection (issue #9)."""
+
+    def test_macos_default_avoids_ctrl_alt_space_and_cmd_space(self) -> None:
+        from local_flow.config import HotkeysConfig, select_push_to_talk
+
+        key = select_push_to_talk(HotkeysConfig(), platform="darwin")
+        # Must not be the Windows/Linux chord (collides with input switcher)
+        # and must not be Spotlight's Cmd+Space.
+        assert key != "<ctrl>+<alt>+space"
+        assert key.replace(" ", "").lower() not in ("<cmd>+space", "cmd+space")
+        # And it must be a valid hotkey (validation would already have run).
+        assert key
+
+    def test_windows_default(self) -> None:
+        from local_flow.config import HotkeysConfig, select_push_to_talk
+
+        assert select_push_to_talk(HotkeysConfig(), platform="win32") == "<ctrl>+<alt>+space"
+
+    def test_linux_default(self) -> None:
+        from local_flow.config import HotkeysConfig, select_push_to_talk
+
+        assert select_push_to_talk(HotkeysConfig(), platform="linux") == "<ctrl>+<alt>+space"
+
+    def test_explicit_push_to_talk_overrides_platform_default(self) -> None:
+        from local_flow.config import HotkeysConfig, select_push_to_talk
+
+        cfg = HotkeysConfig(push_to_talk="<f8>")
+        # An explicit user value wins on every platform.
+        assert select_push_to_talk(cfg, platform="darwin") == "<f8>"
+        assert select_push_to_talk(cfg, platform="win32") == "<f8>"
+
+    def test_per_platform_field_respected(self) -> None:
+        from local_flow.config import HotkeysConfig, select_push_to_talk
+
+        cfg = HotkeysConfig(push_to_talk_macos="<cmd>+<shift>+d")
+        assert select_push_to_talk(cfg, platform="darwin") == "<cmd>+<shift>+d"
+
+    def test_toggle_mode_macos_default_avoids_ctrl_alt(self) -> None:
+        # The toggle-mode per-platform fields are spec-required data (issue #9);
+        # even without a runtime consumer yet, the macOS default must not reuse
+        # the Windows/Linux chord.
+        from local_flow.config import HotkeysConfig
+
+        cfg = HotkeysConfig()
+        assert cfg.toggle_mode_macos != "<ctrl>+<alt>+m"
+        assert cfg.toggle_mode_windows == "<ctrl>+<alt>+m"
+        assert cfg.toggle_mode_linux == "<ctrl>+<alt>+m"
+
+
+def test_empty_push_to_talk_override_is_allowed() -> None:
+    # Empty override means "use the platform default" — must not be rejected.
+    config = load_config_from_dict({"hotkeys": {"push_to_talk": ""}})
+    assert config.hotkeys.push_to_talk == ""
 
 
 def test_application_overrides_accepted() -> None:

@@ -50,7 +50,9 @@ Check `local-flow doctor` for CUDA status. On Apple Silicon, `faster-whisper` ru
 Global hotkeys require the Accessibility permission on macOS (System Settings → Privacy & Security → Accessibility). Without it:
 
 - `pynput` cannot register global hotkeys, and `local-flow run` will fail to detect the push-to-talk key.
+- You will see a message like `This process is not trusted! Input event monitoring will not be possible until it is added to accessibility clients.` on startup — the app keeps running but the hotkey is inert.
 - If you see no response when holding the configured hotkey, check Accessibility permissions for your terminal application.
+- After granting, fully quit (Cmd-Q) and reopen the terminal — the permission only takes effect on a fresh launch.
 - You may also need Input Monitoring permission depending on your terminal.
 
 Do not grant Accessibility permission to untrusted applications.
@@ -60,7 +62,8 @@ Do not grant Accessibility permission to untrusted applications.
 If the configured hotkey does not trigger dictation:
 
 - Another application may have registered the same global hotkey. Common conflicts: screenshot tools (`cmd+shift+5`), password managers, window managers.
-- Change `hotkeys.push_to_talk` in your config to a less-common combination.
+- On macOS, `<ctrl>+<alt>+space` can also collide with the input-source (keyboard-layout) switcher. The default push-to-talk on macOS is therefore `<ctrl>+<shift>+space`, not the Windows/Linux `<ctrl>+<alt>+space` — the per-platform defaults live in the `[hotkeys]` config section (`push_to_talk_macos` / `_windows` / `_linux`).
+- Change `hotkeys.push_to_talk` in your config to pin a specific chord on every platform, or edit the per-platform `push_to_talk_*` default for just one OS.
 - Run `local-flow doctor` — the `Global hotkeys` check will report if `pynput` is importable.
 
 ## Paste shortcut mismatch

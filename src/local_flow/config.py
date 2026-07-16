@@ -20,6 +20,7 @@ IMPLEMENTATION_PLAN.md §3, §11, §21):
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from ipaddress import ip_address
 from pathlib import Path
@@ -79,15 +80,44 @@ class AppConfig(_Section):
 
 
 class HotkeysConfig(_Section):
-    push_to_talk: str = "<ctrl>+<alt>+space"
+    # Explicit override; empty means "use the platform-specific default below"
+    # (see :func:`select_push_to_talk` / :func:`select_toggle_mode`). This keeps
+    # a fresh install platform-appropriate without the user editing config,
+    # while still letting them pin one chord across all platforms (issue #9).
+    push_to_talk: str = ""
     cancel: str = "<esc>"
-    toggle_mode: str = "<ctrl>+<alt>+m"
+    toggle_mode: str = ""
+
+    # Per-platform defaults. macOS avoids <ctrl>+<alt>+space (collides with the
+    # input-source switcher) and <cmd>+space (Spotlight); <ctrl>+<shift>+space
+    # is clean on macOS. Windows/Linux keep the long-standing chord.
+    push_to_talk_macos: str = "<ctrl>+<shift>+space"
+    push_to_talk_windows: str = "<ctrl>+<alt>+space"
+    push_to_talk_linux: str = "<ctrl>+<alt>+space"
+    toggle_mode_macos: str = "<ctrl>+<shift>+m"
+    toggle_mode_windows: str = "<ctrl>+<alt>+m"
+    toggle_mode_linux: str = "<ctrl>+<alt>+m"
 
     @model_validator(mode="after")
     def _check_hotkey_syntax(self) -> HotkeysConfig:
-        for field_name in ("push_to_talk", "cancel", "toggle_mode"):
+        # The override fields (push_to_talk / toggle_mode) may be empty, meaning
+        # "defer to the platform default"; the per-platform fields must not be.
+        optional = ("push_to_talk", "toggle_mode")
+        required = (
+            "cancel",
+            "push_to_talk_macos",
+            "push_to_talk_windows",
+            "push_to_talk_linux",
+            "toggle_mode_macos",
+            "toggle_mode_windows",
+            "toggle_mode_linux",
+        )
+        for field_name in optional:
             value = getattr(self, field_name)
-            _validate_hotkey(f"hotkeys.{field_name}", value)
+            if value:
+                _validate_hotkey(f"hotkeys.{field_name}", value)
+        for field_name in required:
+            _validate_hotkey(f"hotkeys.{field_name}", getattr(self, field_name))
         return self
 
 
@@ -342,6 +372,29 @@ def _validate_hotkey(field: str, value: str) -> None:
             )
         if bracketed and len(token) <= 2:
             raise ValueError(f"{field} '{value}': token '{token}' has no key name")
+
+
+def _platform_key(platform: str) -> str:
+    """Map a ``sys.platform`` string to a hotkey field suffix."""
+    if platform == "darwin":
+        return "macos"
+    if platform.startswith("win"):
+        return "windows"
+    return "linux"
+
+
+def select_push_to_talk(config: HotkeysConfig, *, platform: str | None = None) -> str:
+    """Return the effective push-to-talk hotkey for the current platform (issue #9).
+
+    An explicit ``push_to_talk`` value wins on every platform; otherwise the
+    platform-appropriate default is used. ``platform`` defaults to
+    :data:`sys.platform` and is injectable so tests stay deterministic
+    regardless of the host OS.
+    """
+    if config.push_to_talk:
+        return config.push_to_talk
+    plat = platform if platform is not None else sys.platform
+    return str(getattr(config, f"push_to_talk_{_platform_key(plat)}"))
 
 
 def _validate_cleanup_url(field: str, value: str, *, allow_remote: bool) -> None:

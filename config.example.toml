@@ -21,9 +21,20 @@ notify_on_ready = true
 
 [hotkeys]
 # pynput-style hotkey strings, e.g. "<ctrl>+<alt>+space".
-push_to_talk = "<ctrl>+<alt>+space"
+# push_to_talk / toggle_mode are OPTIONAL overrides: leave them empty to use
+# the platform-appropriate default below, or set one to pin the same chord on
+# every platform.
+push_to_talk = ""
 cancel = "<esc>"
-toggle_mode = "<ctrl>+<alt>+m"
+toggle_mode = ""
+# Per-platform defaults (used when the override above is empty). macOS avoids
+# <ctrl>+<alt>+space (input-source switcher) and <cmd>+space (Spotlight).
+push_to_talk_macos = "<ctrl>+<shift>+space"
+push_to_talk_windows = "<ctrl>+<alt>+space"
+push_to_talk_linux = "<ctrl>+<alt>+space"
+toggle_mode_macos = "<ctrl>+<shift>+m"
+toggle_mode_windows = "<ctrl>+<alt>+m"
+toggle_mode_linux = "<ctrl>+<alt>+m"
 
 [audio]
 device = ""                      # "" = system default input device
