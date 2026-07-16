@@ -86,6 +86,16 @@ restore_clipboard = true
 restore_delay_ms = 750
 paste_delay_ms = 100
 append_space = false
+# How to handle multiline transcripts: "preserve" keeps newlines, "flatten"
+# converts them to spaces (safest for terminals), "copy_only" never pastes and
+# leaves the text on the clipboard for you to paste manually.
+multiline_policy = "preserve"    # preserve | flatten | copy_only
+# Per-platform paste shortcut. Terminal detection is unreliable, so these are
+# configurable; the platform-appropriate one is chosen at runtime.
+shortcut_macos = "cmd+v"
+shortcut_windows = "ctrl+v"
+shortcut_linux_gui = "ctrl+v"
+shortcut_linux_terminal = "ctrl+shift+v"
 # SAFETY: must be false. Automatic submission (pressing Enter) is not
 # implemented in this release; a config that sets this to true is rejected.
 auto_submit = false

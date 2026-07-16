@@ -10,6 +10,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from local_flow import __version__
@@ -113,6 +114,36 @@ def test_run_command_help_works() -> None:
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
     assert "dictation" in result.output.lower() or "run" in result.output.lower()
+
+
+def test_run_no_paste_flag_sets_copy_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--no-paste` runs the controller in copy-only mode without pasting."""
+    import local_flow.app as app_module
+
+    captured: dict[str, object] = {}
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> None:  # pragma: no cover - trivial stub
+            pass
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--no-paste", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert captured.get("copy_only") is True
+
+
+def test_run_help_documents_no_paste() -> None:
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "no-paste" in result.output
 
 
 # --- transcribe (Phase 1) ---------------------------------------------------

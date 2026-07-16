@@ -126,6 +126,29 @@ def test_auto_submit_true_is_rejected() -> None:
     assert "false" in message
 
 
+def test_paste_defaults_are_safe() -> None:
+    # Default multiline policy preserves text (§16 "Preserve multiline text by
+    # default"); platform shortcuts have sensible defaults.
+    paste = Config().paste
+    assert paste.multiline_policy == "preserve"
+    assert paste.shortcut_macos == "cmd+v"
+    assert paste.shortcut_windows == "ctrl+v"
+    assert paste.shortcut_linux_gui == "ctrl+v"
+    assert paste.shortcut_linux_terminal == "ctrl+shift+v"
+
+
+@pytest.mark.parametrize("policy", ["preserve", "flatten", "copy_only"])
+def test_valid_multiline_policy_accepted(policy: str) -> None:
+    config = load_config_from_dict({"paste": {"multiline_policy": policy}})
+    assert config.paste.multiline_policy == policy
+
+
+def test_invalid_multiline_policy_rejected() -> None:
+    with pytest.raises(ConfigError) as exc:
+        load_config_from_dict({"paste": {"multiline_policy": "explode"}})
+    assert "paste.multiline_policy" in str(exc.value)
+
+
 def test_non_loopback_cleanup_url_is_rejected_by_default() -> None:
     with pytest.raises(ConfigError) as exc:
         load_config_from_dict({"cleanup": {"ollama": {"base_url": "http://example.com:11434"}}})

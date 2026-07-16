@@ -52,5 +52,17 @@ class HotkeyError(LocalFlowError):
     """Hotkey registration or listener failure."""
 
 
+class ClipboardError(LocalFlowError):
+    """The clipboard could not be read or written."""
+
+
+class PasteError(LocalFlowError):
+    """A simulated paste keystroke could not be delivered.
+
+    When raised during insertion the transcript is left on the clipboard and
+    the prior clipboard is *not* restored (see §16 "Paste failure").
+    """
+
+
 class InvalidTransitionError(LocalFlowError):
     """Attempted an illegal state-machine transition."""

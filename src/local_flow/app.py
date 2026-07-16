@@ -24,11 +24,13 @@ from local_flow.config import Config
 from local_flow.errors import InvalidTransitionError, LocalFlowError
 from local_flow.notifications import ConsoleNotifier, NotificationEvent
 from local_flow.state import AppState, StateMachine
+from local_flow.text.pipeline import process_transcript
 from local_flow.transcription.factory import create_backend
 
 if TYPE_CHECKING:
     from local_flow.audio.recorder import RecordedAudio
     from local_flow.input.hotkeys import HotkeyProvider
+    from local_flow.input.paste import TextInserter
     from local_flow.transcription.base import TranscriptionBackend
 
 logger = logging.getLogger(__name__)
@@ -43,8 +45,11 @@ class AppController:
         *,
         hotkey_provider: HotkeyProvider | None = None,
         backend: TranscriptionBackend | None = None,
+        text_inserter: TextInserter | None = None,
+        copy_only: bool = False,
     ) -> None:
         self._config = config
+        self._copy_only = copy_only
         self._state_machine = StateMachine()
         self._notifier = ConsoleNotifier(
             enabled=config.notifications.console_enabled,
@@ -63,6 +68,13 @@ class AppController:
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._shutdown_event = threading.Event()
         self._pending_future: Future[None] | None = None
+
+        if text_inserter is None:
+            from local_flow.input.paste import build_text_inserter
+
+            self._inserter: TextInserter = build_text_inserter(config.paste)
+        else:
+            self._inserter = text_inserter
 
         if hotkey_provider is None:
             from local_flow.input.hotkeys import PynputHotkeyProvider
@@ -218,16 +230,50 @@ class AppController:
                 self._state_machine.transition(AppState.IDLE)
             return
 
-        # Phase 4/5 will paste; for now emit char count and return to IDLE.
+        # Deterministic text processing (Phase 4): spoken commands, technical
+        # token protection, filler handling, normalization. A beginning-of-
+        # transcript "cancel" command discards the dictation entirely.
+        pipeline = process_transcript(
+            result.text,
+            mode=self._config.app.mode,
+            spoken_commands_enabled=self._config.text.spoken_commands_enabled,
+        )
+
+        if pipeline.cancelled:
+            with contextlib.suppress(InvalidTransitionError):
+                self._state_machine.transition(AppState.CANCELLED)
+                self._notifier.notify(NotificationEvent.CANCELLED)
+                self._state_machine.transition(AppState.IDLE)
+            return
+
+        if not pipeline.text:
+            # Empty transcript after processing — nothing to paste. Skip the
+            # PASTING state and return to IDLE without inserting.
+            self._notifier.notify(NotificationEvent.CANCELLED)
+            with contextlib.suppress(InvalidTransitionError):
+                self._state_machine.transition(AppState.PASTING)
+                self._state_machine.transition(AppState.IDLE)
+            return
+
+        # Insert the text at the cursor (Phase 5). Insertion never presses
+        # Enter; a paste failure leaves the transcript on the clipboard.
         try:
             self._state_machine.transition(AppState.PASTING)
         except InvalidTransitionError:
             return
 
-        self._notifier.notify(
-            NotificationEvent.SUCCESS,
-            char_count=len(result.text),
-        )
+        insertion = self._inserter.insert(pipeline.text, copy_only=self._copy_only)
+
+        if insertion.error is not None:
+            # §16 paste failure: transcript is on the clipboard; notify without
+            # revealing content, then return to idle (no arbitrary retry).
+            logger.warning("paste failed; transcript left on clipboard")
+            self._notifier.notify(NotificationEvent.ERROR)
+        else:
+            self._notifier.notify(
+                NotificationEvent.SUCCESS,
+                char_count=len(pipeline.text),
+            )
 
         with contextlib.suppress(InvalidTransitionError):
             self._state_machine.transition(AppState.IDLE)

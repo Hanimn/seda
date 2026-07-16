@@ -181,13 +181,18 @@ def config_show_effective(
 @app.command()
 def run(
     config: Path | None = typer.Option(None, "--config", help="Path to a config file."),
+    no_paste: bool = typer.Option(
+        False,
+        "--no-paste",
+        help="Copy the transcript to the clipboard without simulating paste.",
+    ),
 ) -> None:
     """Run the background dictation loop."""
     from local_flow.app import AppController
 
     cfg = _safe_load(config)
     configure_logging(cfg)
-    AppController(cfg).run()
+    AppController(cfg, copy_only=no_paste).run()
 
 
 @app.command()

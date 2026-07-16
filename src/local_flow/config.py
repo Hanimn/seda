@@ -190,6 +190,16 @@ class PasteConfig(_Section):
     restore_delay_ms: int = Field(default=750, ge=0)
     paste_delay_ms: int = Field(default=100, ge=0)
     append_space: bool = False
+    # How to handle multiline transcripts (§16). "preserve" keeps newlines,
+    # "flatten" converts them to spaces (safest for terminals), "copy_only"
+    # never simulates paste and leaves the text on the clipboard.
+    multiline_policy: Literal["preserve", "flatten", "copy_only"] = "preserve"
+    # Per-platform paste shortcuts (§16). Automatic terminal detection is
+    # unreliable, so these are configurable and default to the platform norm.
+    shortcut_macos: str = "cmd+v"
+    shortcut_windows: str = "ctrl+v"
+    shortcut_linux_gui: str = "ctrl+v"
+    shortcut_linux_terminal: str = "ctrl+shift+v"
     # SAFETY: automatic submission (pressing Enter) is not implemented in this
     # release. The field exists so the schema is stable, but any true value is
     # rejected in the validator below.

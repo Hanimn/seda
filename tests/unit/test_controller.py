@@ -63,6 +63,21 @@ def _make_controller(
     return ctrl, hotkeys, be
 
 
+class _RecordingInserter:
+    """Captures the text handed to insert(); reports a successful paste."""
+
+    def __init__(self) -> None:
+        self.inserted: list[str] = []
+        self.copy_only_calls: list[bool] = []
+
+    def insert(self, text: str, *, copy_only: bool = False) -> object:
+        from local_flow.input.paste import InsertionResult
+
+        self.inserted.append(text)
+        self.copy_only_calls.append(copy_only)
+        return InsertionResult(copied=True, pasted=not copy_only, restored=True)
+
+
 class _FakeRecorder:
     """Minimal recorder double: stop() returns silent audio, cancel() is a no-op."""
 
@@ -217,6 +232,116 @@ class TestBusyBehavior:
             assert "[busy]" in buf.getvalue()
         finally:
             transcribe_gate.set()
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+
+class TestTextInsertion:
+    """The transcript is processed and handed to the inserter (Phase 5)."""
+
+    def test_transcript_processed_and_inserted(self) -> None:
+        be = FakeBackend(text="hello world")
+        ctrl, hotkeys, _ = _make_controller(backend=be)
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            assert inserter.inserted == ["hello world"]
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_spoken_commands_applied_before_insertion(self) -> None:
+        be = FakeBackend(text="symbol open brace key symbol colon val symbol close brace")
+        ctrl, hotkeys, _ = _make_controller(backend=be)
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            assert inserter.inserted == ["{key:val}"]
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_cancel_command_in_transcript_skips_insertion(self) -> None:
+        be = FakeBackend(text="scratch that never mind")
+        ctrl, hotkeys, _ = _make_controller(backend=be)
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            # A beginning-of-transcript cancel command discards the dictation.
+            assert inserter.inserted == []
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_empty_transcript_skips_insertion(self) -> None:
+        be = FakeBackend(text="   ")
+        ctrl, hotkeys, _ = _make_controller(backend=be)
+        inserter = _RecordingInserter()
+        ctrl._inserter = inserter  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            assert inserter.inserted == []
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_paste_failure_emits_error_notification(self) -> None:
+        import io
+
+        from local_flow.notifications import ConsoleNotifier
+
+        buf = io.StringIO()
+        be = FakeBackend(text="hello world")
+        ctrl, hotkeys, _ = _make_controller(backend=be)
+        ctrl._notifier = ConsoleNotifier(stream=buf)
+
+        class FailingInserter:
+            def insert(self, text: str, *, copy_only: bool = False) -> object:
+                from local_flow.input.paste import InsertionResult
+
+                return InsertionResult(
+                    copied=True, pasted=False, restored=False, error="paste failed"
+                )
+
+        ctrl._inserter = FailingInserter()  # type: ignore[assignment]
+
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            # Paste failure surfaces as an error, but never crashes the loop.
+            assert "[error]" in buf.getvalue()
+        finally:
             ctrl.shutdown()
             t.join(timeout=3.0)
 

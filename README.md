@@ -4,10 +4,12 @@ Local-first, system-wide voice dictation — optimized for dictating prompts int
 Claude Code and other terminal applications. Hold a global push-to-talk hotkey,
 speak, release, and get **editable** text at your cursor.
 
-> **Status:** early development. Implemented so far: the project skeleton
-> (configuration, logging, diagnostics, CLI) and **file transcription** via a
-> local `faster-whisper` model (`local-flow transcribe FILE`). Microphone
-> capture, hotkeys, and paste are not implemented yet. See
+> **Status:** MVP complete (Phases 0–5). Implemented: the project skeleton
+> (configuration, logging, diagnostics, CLI), **file transcription** via a
+> local `faster-whisper` model (`local-flow transcribe FILE`), microphone
+> capture, global push-to-talk hotkeys, deterministic text processing, and
+> **clipboard paste at the cursor** (`local-flow run`). Optional LLM cleanup and
+> platform hardening are the next phases. See
 > [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the full roadmap.
 
 ## Safety and privacy
@@ -74,9 +76,18 @@ local-flow transcribe recording.wav --copy      # copy the transcript to the cli
 local-flow transcribe recording.wav --offline   # require a local model; never download
 ```
 
-Commands that need a microphone or global hotkeys (`run`, `devices`,
-`test-mic`) are listed in `--help` but report that they are not yet
-implemented.
+Push-to-talk dictation (Phases 2–5) — hold the hotkey, speak, release, and the
+transcript is pasted at your cursor:
+
+```bash
+local-flow run                  # start the push-to-talk loop
+local-flow run --no-paste       # copy the transcript instead of pasting it
+local-flow devices              # list microphone input devices
+local-flow test-mic             # record a short sample and report levels
+```
+
+Local Flow never presses Enter: pasted text always stays editable. If a paste
+fails, the transcript is left on the clipboard and you are notified.
 
 ### Exit codes
 
