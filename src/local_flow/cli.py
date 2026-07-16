@@ -179,9 +179,15 @@ def config_show_effective(
 
 
 @app.command()
-def run() -> None:
-    """Run the background dictation loop (not implemented in Phase 0)."""
-    _not_implemented("run", ExitCode.RUNTIME)
+def run(
+    config: Path | None = typer.Option(None, "--config", help="Path to a config file."),
+) -> None:
+    """Run the background dictation loop."""
+    from local_flow.app import AppController
+
+    cfg = _safe_load(config)
+    configure_logging(cfg)
+    AppController(cfg).run()
 
 
 @app.command()

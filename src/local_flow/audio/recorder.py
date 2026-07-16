@@ -226,9 +226,7 @@ def _to_mono_float32(samples: np.ndarray) -> np.ndarray:
     return arr
 
 
-def _frame_energy(
-    samples: np.ndarray, sample_rate: int, frame_ms: int = 20
-) -> np.ndarray:
+def _frame_energy(samples: np.ndarray, sample_rate: int, frame_ms: int = 20) -> np.ndarray:
     """Compute per-frame RMS energy with *frame_ms* millisecond frames."""
     frame_len = max(1, int(sample_rate * frame_ms / 1000))
     n_frames = len(samples) // frame_len

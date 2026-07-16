@@ -171,7 +171,7 @@ class TestSounddeviceRecorderStopProcessing:
 
     def test_stop_concatenates_blocks(self, monkeypatch):
         tone = _tone(RATE, 0.3)
-        blocks = [tone[:RATE // 2].reshape(-1, 1), tone[RATE // 2:].reshape(-1, 1)]
+        blocks = [tone[: RATE // 2].reshape(-1, 1), tone[RATE // 2 :].reshape(-1, 1)]
         rec = self._make_recorder(monkeypatch, blocks)
         audio = rec.stop()
         assert audio.sample_rate == RATE

@@ -46,3 +46,11 @@ class ModelUnavailableError(LocalFlowError):
 
 class TranscriptionError(LocalFlowError):
     """Transcription failed for a reason other than a missing model."""
+
+
+class HotkeyError(LocalFlowError):
+    """Hotkey registration or listener failure."""
+
+
+class InvalidTransitionError(LocalFlowError):
+    """Attempted an illegal state-machine transition."""

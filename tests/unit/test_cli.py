@@ -109,11 +109,10 @@ def test_doctor_fails_on_invalid_config(tmp_path: Path) -> None:
     assert "FAIL" in result.stdout
 
 
-def test_unimplemented_command_reports_and_exits_nonzero() -> None:
-    result = runner.invoke(app, ["run"])
-    assert result.exit_code == int(ExitCode.RUNTIME)
-    assert "not implemented" in result.output
-    assert "Traceback" not in result.output
+def test_run_command_help_works() -> None:
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "dictation" in result.output.lower() or "run" in result.output.lower()
 
 
 # --- transcribe (Phase 1) ---------------------------------------------------

@@ -102,7 +102,5 @@ def resolve_device(spec: str | int | None) -> DeviceInfo | None:
         return matches[0]
     if len(matches) > 1:
         names = ", ".join(f"'{d.name}'" for d in matches)
-        raise DeviceError(
-            f"device spec '{spec}' is ambiguous — matches: {names}"
-        )
+        raise DeviceError(f"device spec '{spec}' is ambiguous — matches: {names}")
     raise DeviceError(f"no input device matching '{spec}'")
