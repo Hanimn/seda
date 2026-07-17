@@ -162,28 +162,41 @@ class _ChordSuppressor:
     (including the trigger, e.g. space) passes through untouched (issue #12),
     so ordinary typing keeps working system-wide while ``run`` is active.
 
+    The cancel key (e.g. ``esc``) is likewise suppressed only while the chord is
+    engaged — the window in which pressing it cancels an in-progress dictation
+    (issue #13) — so a bare Esc still reaches the focused app when idle.
+
     The decision is stateless: the caller supplies which chord modifiers are
     currently held (read from the OS event's modifier flags), so there is no
     keydown/keyup bookkeeping to drift out of sync.
     """
 
-    def __init__(self, chord_keys: frozenset[str], chord_modifiers: frozenset[str]) -> None:
+    def __init__(
+        self,
+        chord_keys: frozenset[str],
+        chord_modifiers: frozenset[str],
+        cancel_keys: frozenset[str] = frozenset(),
+    ) -> None:
         self._chord_keys = chord_keys
         self._chord_modifiers = chord_modifiers
+        self._cancel_keys = cancel_keys
 
     def should_suppress(self, identity: str | None, *, modifiers_held: bool) -> bool:
-        """Suppress iff *identity* is a chord key and the chord is engaged.
+        """Suppress iff *identity* is a chord/cancel key and the chord is engaged.
 
         ``modifiers_held`` is True when at least one of the chord's modifiers is
         currently down. A chord modifier is always suppressed (pressing it is
-        how the user composes the chord); the trigger is suppressed only while a
-        chord modifier is held, so a bare trigger keypress passes through.
+        how the user composes the chord); the chord trigger and the cancel key
+        are suppressed only while a chord modifier is held, so a bare trigger or
+        a bare Esc keypress passes through to the focused application.
         """
-        if identity is None or identity not in self._chord_keys:
+        if identity is None:
             return False
         if identity in self._chord_modifiers:
             return True
-        return modifiers_held
+        if identity in self._chord_keys or identity in self._cancel_keys:
+            return modifiers_held
+        return False
 
 
 # macOS virtual keycodes for the keys we may need to identify from a raw
@@ -270,8 +283,14 @@ class PynputHotkeyProvider:
         # The non-modifier trigger key whose release ends a hold (issue #10).
         self._ptt_trigger = _trigger_token(self._ptt_key)
         self._chord_keys = _chord_key_names(self._ptt_key)
-        self._suppressor = _ChordSuppressor(self._chord_keys, _chord_modifier_names(self._ptt_key))
         self._cancel_key = config.cancel
+        # Suppress the chord keys (issues #11/#12) and the cancel key (issue #13)
+        # from leaking to the focused app while the chord is engaged.
+        self._suppressor = _ChordSuppressor(
+            self._chord_keys,
+            _chord_modifier_names(self._ptt_key),
+            _chord_key_names(self._cancel_key),
+        )
         self._on_press_cb: Callable[[], None] = lambda: None
         self._on_release_cb: Callable[[], None] = lambda: None
         self._on_cancel_cb: Callable[[], None] = lambda: None

@@ -236,7 +236,7 @@ class TestKeySuppressionDecision:
 
 
 class TestChordSuppressor:
-    """Only suppress chord keys while the chord is engaged (issue #12)."""
+    """Only suppress chord/cancel keys while the chord is engaged (issues #12, #13)."""
 
     def _make(self) -> object:
         from local_flow.input.hotkeys import (
@@ -246,7 +246,11 @@ class TestChordSuppressor:
         )
 
         chord = "<ctrl>+<shift>+space"
-        return _ChordSuppressor(_chord_key_names(chord), _chord_modifier_names(chord))
+        return _ChordSuppressor(
+            _chord_key_names(chord),
+            _chord_modifier_names(chord),
+            _chord_key_names("<esc>"),
+        )
 
     def test_bare_trigger_when_idle_passes_through(self) -> None:
         # The regression: space alone, no modifiers held, must NOT be suppressed.
@@ -268,6 +272,17 @@ class TestChordSuppressor:
         assert s.should_suppress("a", modifiers_held=True) is False
         assert s.should_suppress("enter", modifiers_held=True) is False
         assert s.should_suppress(None, modifiers_held=True) is False
+
+    def test_bare_cancel_key_when_idle_passes_through(self) -> None:
+        # Esc must still reach the focused app when not push-to-talking (issue #13):
+        # suppressing it globally would break dialogs, vim, etc.
+        s = self._make()
+        assert s.should_suppress("esc", modifiers_held=False) is False
+
+    def test_cancel_key_while_chord_engaged_is_suppressed(self) -> None:
+        # While holding the chord (modifiers down), Esc cancels and must not leak.
+        s = self._make()
+        assert s.should_suppress("esc", modifiers_held=True) is True
 
 
 class TestDarwinIntercept:
