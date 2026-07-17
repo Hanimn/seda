@@ -589,3 +589,71 @@ class TestShutdown:
         stopper.join(timeout=3.0)
 
         assert len(captured_handler) > 0, "signal.signal(SIGINT, ...) was never called"
+
+
+class TestStartSeam:
+    """start() is the non-blocking setup half of run() (ADR-0001)."""
+
+    def test_start_is_non_blocking_and_readies_the_controller(self) -> None:
+        ctrl, hotkeys, backend = _make_controller()
+        # start() must return promptly (it does not wait on the shutdown event)
+        # and leave the controller ready to receive hotkey callbacks.
+        ctrl.start()
+        try:
+            assert backend.loaded is True
+            assert ctrl._state_machine.state is AppState.IDLE
+            # Hotkey callbacks were registered (the provider captured them).
+            assert hotkeys.on_press is not None
+            # And the controller actually responds to a press.
+            hotkeys.on_press()
+            assert ctrl._state_machine.state is AppState.RECORDING
+        finally:
+            ctrl.shutdown()
+
+    def test_start_emits_ready(self) -> None:
+        import io
+
+        from local_flow.notifications import ConsoleNotifier, NotificationEvent
+
+        buf = io.StringIO()
+        ctrl, _, _ = _make_controller()
+        ctrl._notifier = ConsoleNotifier(stream=buf)
+        ctrl.start()
+        try:
+            assert NotificationEvent.READY.value.lower() in buf.getvalue().lower()
+        finally:
+            ctrl.shutdown()
+
+
+class TestNotifierInjection:
+    """A notifier can be injected via the constructor (seam for ADR-0003)."""
+
+    def test_injected_notifier_receives_events(self) -> None:
+        recorded: list[object] = []
+
+        class _RecordingNotifier:
+            def notify(self, event: object, **kwargs: object) -> None:
+                recorded.append(event)
+
+        cfg = Config()
+        ctrl = AppController(
+            cfg,
+            hotkey_provider=FakeHotkeyProvider(),
+            backend=FakeBackend(),
+            text_inserter=_RecordingInserter(),
+            notifier=_RecordingNotifier(),  # type: ignore[arg-type]
+        )
+        ctrl._recorder = _FakeRecorder()
+        ctrl.start()
+        try:
+            from local_flow.notifications import NotificationEvent
+
+            assert NotificationEvent.READY in recorded
+        finally:
+            ctrl.shutdown()
+
+    def test_default_notifier_is_console(self) -> None:
+        from local_flow.notifications import ConsoleNotifier
+
+        ctrl, _, _ = _make_controller()
+        assert isinstance(ctrl._notifier, ConsoleNotifier)

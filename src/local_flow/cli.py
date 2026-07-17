@@ -199,7 +199,21 @@ def run(
     configure_logging(cfg)
     # ``--no-cleanup`` force-disables cleanup; otherwise the config flag decides.
     cleanup_enabled = None if not no_cleanup else False
-    AppController(cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled).run()
+    controller = AppController(cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled)
+
+    # On macOS the overlay GUI host owns the main thread and drives the
+    # controller (ADR-0001). It fails open — returning False on non-macOS, an
+    # AppKit failure, or the not-yet-implemented panel — in which case we run
+    # the controller's own blocking loop, exactly as before. Any unexpected
+    # error bringing up the host must also degrade to the terminal path.
+    try:
+        from local_flow.gui.host import run_with_overlay
+
+        hosted = run_with_overlay(controller)
+    except Exception:  # noqa: BLE001
+        hosted = False
+    if not hosted:
+        controller.run()
 
 
 @app.command()

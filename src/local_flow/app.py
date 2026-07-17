@@ -28,7 +28,7 @@ from local_flow.errors import (
     InvalidTransitionError,
     LocalFlowError,
 )
-from local_flow.notifications import ConsoleNotifier, NotificationEvent
+from local_flow.notifications import ConsoleNotifier, NotificationEvent, Notifier
 from local_flow.state import AppState, StateMachine
 from local_flow.text.pipeline import (
     PipelineResult,
@@ -59,6 +59,7 @@ class AppController:
         backend: TranscriptionBackend | None = None,
         text_inserter: TextInserter | None = None,
         cleanup_provider: CleanupProvider | None = None,
+        notifier: Notifier | None = None,
         copy_only: bool = False,
         cleanup_enabled: bool | None = None,
     ) -> None:
@@ -72,7 +73,9 @@ class AppController:
         else:
             self._cleanup_enabled = cleanup_enabled and config.cleanup.enabled
         self._state_machine = StateMachine()
-        self._notifier = ConsoleNotifier(
+        # A notifier can be injected (ADR-0003's fan-out will use this seam);
+        # default to the plain console notifier so behavior is unchanged.
+        self._notifier: Notifier = notifier or ConsoleNotifier(
             enabled=config.notifications.console_enabled,
         )
         recorder_cfg = RecorderConfig(
@@ -123,8 +126,15 @@ class AppController:
     # Public API
     # ------------------------------------------------------------------
 
-    def run(self) -> None:
-        """Load the model, start hotkey listening, block until shutdown."""
+    def start(self) -> None:
+        """Load the model and start hotkey listening — the non-blocking setup.
+
+        This is the setup half of :meth:`run`, split out so a GUI host that
+        owns the main thread (macOS overlay, ADR-0001) can drive the controller
+        without the blocking wait: the host calls ``start()`` then, on quit,
+        :meth:`shutdown`. On the fallback path ``run()`` calls ``start()`` and
+        then blocks on the shutdown event exactly as before.
+        """
         self._backend.load()
         self._state_machine.transition(AppState.IDLE)
 
@@ -134,6 +144,10 @@ class AppController:
             on_cancel=self._on_cancel,
         )
         self._notifier.notify(NotificationEvent.READY)
+
+    def run(self) -> None:
+        """Load the model, start hotkey listening, block until shutdown."""
+        self.start()
 
         # Install signal handlers only when running on the main thread — signal
         # registration raises ValueError from non-main threads (e.g. in tests).
