@@ -326,9 +326,7 @@ class TestSelectOverlayEnabled:
 
         # Flag wins over everything, including an explicit enabled=True.
         assert (
-            select_overlay_enabled(
-                OverlayConfig(enabled=True), no_overlay=True, platform="darwin"
-            )
+            select_overlay_enabled(OverlayConfig(enabled=True), no_overlay=True, platform="darwin")
             is False
         )
 
