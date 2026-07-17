@@ -146,7 +146,16 @@ class AppController:
         then blocks on the shutdown event exactly as before.
         """
         self._backend.load()
-        self._state_machine.transition(AppState.IDLE)
+        # A shutdown (e.g. Ctrl-C) can race in *during* the slow load() — the
+        # signal handler runs on the main thread and moves the state to
+        # STOPPING. If so, STARTING->IDLE is no longer valid; bail cleanly
+        # rather than raising, and don't start hotkeys on an app that's already
+        # stopping.
+        try:
+            self._state_machine.transition(AppState.IDLE)
+        except InvalidTransitionError:
+            logger.info("shutdown raced with startup; aborting start()")
+            return
 
         self._hotkeys.start(
             on_press=self._on_press,

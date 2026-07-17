@@ -228,30 +228,47 @@ def run_with_overlay(
         return False
 
     build_fn = build if build is not None else build_overlay
+
+    # Fail-open covers ONLY acquiring AppKit + building the panel. If that
+    # fails (non-macOS AppKit, import error, panel build error), the overlay is
+    # unavailable and the caller safely falls back to controller.run() — the
+    # controller has NOT been started yet, so a retry is clean.
+    from AppKit import NSApplication
+
     try:
-        _run_appkit_host(controller, build_fn, register_overlay)
+        app = NSApplication.sharedApplication()
+        overlay = build_fn(lambda: controller.latest_level)
     except (ImportError, OSError) as exc:
         logger.info("overlay unavailable, falling back to terminal mode: %s", exc)
         return False
     except Exception:  # noqa: BLE001
-        logger.warning("overlay host failed, falling back to terminal mode", exc_info=True)
+        logger.warning("overlay setup failed, falling back to terminal mode", exc_info=True)
         return False
+
+    # Past this point the GUI host OWNS the run: it installs signals, starts the
+    # controller, and blocks in NSApp.run(). A failure here (e.g. the backend
+    # failing to load in controller.start()) is the controller's own error, not
+    # an overlay problem — it must NOT fall back to controller.run() (that would
+    # re-run start() and fail again). Let it propagate, exactly as controller.run()
+    # would surface the same error on the terminal path.
+    _run_appkit_host(controller, app, overlay, register_overlay)
     return True
 
 
 def _run_appkit_host(
     controller: AppController,
-    build: Callable[[Callable[[], float]], Overlay],
+    app: Any,
+    overlay: Overlay,
     register_overlay: Callable[[Overlay], None] | None,
 ) -> None:
-    """Own the main thread with AppKit and drive *controller* (macOS only)."""
-    from AppKit import NSApplication
+    """Own the main thread with AppKit and drive *controller* (macOS only).
 
-    overlay = build(lambda: controller.latest_level)
+    Assumes AppKit is available and *overlay* is already built (the fail-open
+    boundary is in :func:`run_with_overlay`). Installs signal handlers, starts
+    the controller, and blocks in ``NSApplication.run()``.
+    """
     if register_overlay is not None:
         register_overlay(overlay)
-
-    app = NSApplication.sharedApplication()
 
     # Install SIGINT/SIGTERM on the main thread (Python only allows this on
     # main). The handler stops the controller, then the AppKit run loop, so the

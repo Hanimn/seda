@@ -115,3 +115,54 @@ def test_success_runs_the_loop_starts_controller_and_registers_overlay(
     assert ctrl.started is True, "controller.start() must run before the loop"
     assert registered == [built], "the built overlay must be registered before the loop"
     assert events == ["run"], "the AppKit run loop must be entered"
+
+
+def test_controller_start_failure_propagates_and_does_not_fall_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the host owns the run, a controller.start() failure must NOT fall back.
+
+    Regression for the real-run crash: a backend that fails to load raised in
+    controller.start(); the old code caught it as 'overlay failed', returned
+    False, and cli.run() then re-ran controller.run() -> start() -> same failure
+    (a double crash, and start() run twice). The fail-open boundary now only
+    covers AppKit setup, so a start() failure propagates once, cleanly.
+    """
+    started: list[int] = []
+
+    class _FailingController:
+        latest_level = 0.0
+
+        def start(self) -> None:
+            started.append(1)
+            raise RuntimeError("backend failed to load")
+
+        def shutdown(self) -> None:  # pragma: no cover
+            pass
+
+        def run(self) -> None:  # pragma: no cover
+            pass
+
+    class _FakeApp:
+        def run(self) -> None:  # pragma: no cover - start() raises before this
+            pass
+
+        def stop_(self, _sender: Any) -> None:  # noqa: N802
+            pass
+
+    fake_appkit = types.ModuleType("AppKit")
+    fake_appkit.NSApplication = type(  # type: ignore[attr-defined]
+        "NSApplication", (), {"sharedApplication": staticmethod(lambda: _FakeApp())}
+    )
+    monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
+    monkeypatch.setattr("local_flow.gui.host.signal.signal", lambda *_a, **_k: None)
+
+    ctrl = _FailingController()
+    # The failure must propagate, NOT be swallowed into a False return.
+    with pytest.raises(RuntimeError, match="backend failed to load"):
+        run_with_overlay(
+            ctrl,  # type: ignore[arg-type]
+            build=lambda _level: _fake_overlay(),
+            platform="darwin",
+        )
+    assert started == [1], "controller.start() must run exactly once (no fall-back retry)"

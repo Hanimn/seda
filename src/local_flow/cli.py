@@ -203,7 +203,7 @@ def run(
     from local_flow.notifications import ConsoleNotifier, FanOutNotifier
 
     cfg = _safe_load(config)
-    configure_logging(cfg)
+    logger = configure_logging(cfg)
     # ``--no-cleanup`` force-disables cleanup; otherwise the config flag decides.
     cleanup_enabled = None if not no_cleanup else False
 
@@ -223,12 +223,19 @@ def run(
     hosted = False
     if overlay_requested:
         # On macOS the overlay GUI host owns the main thread and drives the
-        # controller. It fails open — returning False on non-macOS or an AppKit
-        # failure — in which case we run the controller's own blocking loop,
-        # exactly as before. Any unexpected error must also degrade to terminal.
+        # controller. run_with_overlay() fails open by RETURNING False (non-macOS
+        # or an AppKit setup failure) — in which case we run the controller's own
+        # blocking loop below, exactly as before. Once the host has committed to
+        # the run (AppKit up, controller.start() called), a failure is the
+        # controller's own error and PROPAGATES — we must not fall back and
+        # re-run start(). Only a failure importing the optional host module is
+        # treated as "overlay unavailable".
         try:
             from local_flow.gui.host import Overlay, run_with_overlay
             from local_flow.notifications import OverlayNotifier
+        except ImportError:
+            logger.info("overlay host unavailable; running in terminal mode")
+        else:
 
             def _register(overlay: Overlay) -> None:
                 # Wire the built panel's show/hide into the fan-out (ADR-0003):
@@ -242,8 +249,6 @@ def run(
                 )
 
             hosted = run_with_overlay(controller, register_overlay=_register)
-        except Exception:  # noqa: BLE001
-            hosted = False
     if not hosted:
         controller.run()
 
