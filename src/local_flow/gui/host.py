@@ -87,7 +87,7 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
     from Foundation import NSMakeRect, NSObject, NSTimer
 
     _PANEL_W, _PANEL_H = 160.0, 48.0
-    _BARS = 5
+    _BARS = 9
 
     class WaveformView(NSView):  # type: ignore[misc]
         def initWithFrame_(self, frame: Any) -> Any:  # noqa: N802
@@ -95,6 +95,7 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
             if self is None:
                 return None
             self._level = 0.0
+            self._frame = 0  # advances each redraw, for subtle per-bar motion
             return self
 
         def needsPanelToBecomeKey(self) -> bool:  # noqa: N802 - never take keyboard focus
@@ -104,24 +105,31 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
             return False
 
         def drawRect_(self, _dirty: Any) -> None:  # noqa: N802
+            import math
+
             bounds = self.bounds()
             NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.55).set()
             NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, 8.0, 8.0).fill()
             level = max(0.0, min(1.0, float(getattr(self, "_level", 0.0)) * 4.0))
-            NSColor.whiteColor().colorWithAlphaComponent_(0.9).set()
-            width, gap = 6.0, 4.0
-            # Center the bar cluster horizontally in the panel: total cluster
-            # width = N bars + (N-1) gaps; start so it's centered (NSView origin
-            # is bottom-left).
+            self._frame = getattr(self, "_frame", 0) + 1
+            phase = self._frame / 60.0  # seconds-ish, for the jitter animation
+
+            # Design: symmetric "mirror" EQ bars — each bar grows up AND down from
+            # the vertical center line. Center bars are weighted taller; a little
+            # per-bar jitter keeps it lively (mockup #2).
+            NSColor.whiteColor().colorWithAlphaComponent_(0.92).set()
+            width, gap = 6.0, 3.0
             cluster = _BARS * width + (_BARS - 1) * gap
             start_x = (bounds.size.width - cluster) / 2.0
+            cy = bounds.size.height / 2.0
             for i in range(_BARS):
-                # A simple symmetric meter: center bars taller than edges.
-                weight = 1.0 - abs(i - (_BARS - 1) / 2.0) / _BARS
-                h = max(2.0, bounds.size.height * 0.85 * level * weight)
+                # Triangular weight: 1.0 at center, tapering to ~0.35 at edges.
+                weight = 0.35 + 0.65 * (1.0 - abs(i - (_BARS - 1) / 2.0) / (_BARS / 2.0))
+                jitter = 0.7 + 0.3 * math.sin(phase * 9.0 + i)
+                half = max(2.0, (bounds.size.height * 0.42) * level * weight * jitter)
                 x = start_x + i * (width + gap)
-                NSBezierPath.bezierPathWithRect_(
-                    NSMakeRect(x, (bounds.size.height - h) / 2.0, width, h)
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(x, cy - half, width, half * 2.0), width / 2.0, width / 2.0
                 ).fill()
 
     class OverlayPanel(NSPanel):  # type: ignore[misc]
