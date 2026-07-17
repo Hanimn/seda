@@ -191,3 +191,89 @@ def test_controller_start_failure_propagates_and_does_not_fall_back(
             platform="darwin",
         )
     assert started == [1], "controller.start() must run exactly once (no fall-back retry)"
+
+
+# --- native pre-warm (race prevention on the pynput listener thread) --------
+
+
+def test_host_pre_warms_native_before_starting_the_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both native warmers must run on the main thread BEFORE controller.start().
+
+    The pynput darwin listener touches the Carbon TIS context (SIGABRT hazard)
+    and ``HIServices.AXIsProcessTrusted`` (PyObjC lazy-import ``funcmap.pop``
+    race → ``KeyError``) on its own thread. Priming each on the main thread
+    before the listener starts (i.e. before ``controller.start()``) is what
+    defeats both races; lock that ordering here.
+    """
+    order: list[str] = []
+
+    class _FakeApp:
+        def run(self) -> None:
+            order.append("run")
+
+        def stop_(self, _sender: Any) -> None:  # noqa: N802
+            pass
+
+    fake_appkit = types.ModuleType("AppKit")
+    fake_appkit.NSApplication = type(  # type: ignore[attr-defined]
+        "NSApplication", (), {"sharedApplication": staticmethod(lambda: _FakeApp())}
+    )
+    monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
+    monkeypatch.setattr("local_flow.gui.host.signal.signal", lambda *_a, **_k: None)
+    monkeypatch.setattr("local_flow.gui.host._warm_input_source", lambda: order.append("warm_tis"))
+    monkeypatch.setattr(
+        "local_flow.gui.host._warm_accessibility_trust", lambda: order.append("warm_ax")
+    )
+
+    class _OrderingController(_SpyController):
+        def start(self) -> None:
+            order.append("start")
+            super().start()
+
+    ctrl = _OrderingController()
+    result = run_with_overlay(
+        ctrl,  # type: ignore[arg-type]
+        build=lambda _level: _fake_overlay(),
+        platform="darwin",
+    )
+
+    assert result is True
+    # Both warmers run, and both precede start() (which precedes the run loop).
+    assert order.index("warm_tis") < order.index("start")
+    assert order.index("warm_ax") < order.index("start")
+    assert order.index("start") < order.index("run")
+
+
+def test_warm_accessibility_trust_resolves_the_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_warm_accessibility_trust`` accesses ``HIServices.AXIsProcessTrusted``.
+
+    Resolving it once on the main thread is what caches it on the module so the
+    listener thread never re-enters PyObjC's racy lazy-import path.
+    """
+    from local_flow.gui.host import _warm_accessibility_trust
+
+    calls: list[str] = []
+    fake_hiservices = types.ModuleType("HIServices")
+    fake_hiservices.AXIsProcessTrusted = lambda: calls.append("axtrusted") or False  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "HIServices", fake_hiservices)
+
+    _warm_accessibility_trust()
+    assert calls == ["axtrusted"], "the trust symbol must be resolved exactly once"
+
+
+def test_warm_accessibility_trust_swallows_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A broken/absent HIServices must never raise into the host (fail-open)."""
+    from local_flow.gui.host import _warm_accessibility_trust
+
+    fake_hiservices = types.ModuleType("HIServices")
+
+    def _boom() -> bool:
+        raise RuntimeError("HIServices exploded")
+
+    fake_hiservices.AXIsProcessTrusted = _boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "HIServices", fake_hiservices)
+
+    # Must not raise.
+    _warm_accessibility_trust()

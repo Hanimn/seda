@@ -122,6 +122,7 @@ module = [
   "Quartz.*",
   "AppKit.*",
   "Foundation.*",
+  "HIServices.*",
   "objc.*",
   "pyperclip.*",
   "faster_whisper.*",
