@@ -229,6 +229,13 @@ def run(
         cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled, notifier=notifier
     )
 
+    # Surface the macOS Accessibility permission gap up front (both run paths
+    # block below). Without it, pynput installs its event tap but receives no
+    # keys, so push-to-talk silently does nothing — pynput only logs a cryptic
+    # "not trusted" line. A clear, actionable warning here saves the confusion.
+    # Non-macOS / unknown probe → stay silent (returns None).
+    _warn_if_accessibility_untrusted()
+
     # Resolve whether the overlay is *requested* (ADR-0004): --no-overlay >
     # explicit config > platform. Even when requested, the GUI host still fails
     # open if AppKit is unavailable (ADR-0001), so a non-macOS request is
@@ -511,6 +518,19 @@ def _safe_load(config: Path | None) -> Config:
     except ConfigError as exc:
         _err(str(exc))
         raise typer.Exit(code=int(ExitCode.CONFIG)) from exc
+
+
+def _warn_if_accessibility_untrusted() -> None:
+    """Print a clear, actionable warning if macOS Accessibility is not granted.
+
+    Best-effort and silent on non-macOS or an unknown probe result — only warns
+    when we positively know the process is *not* trusted (see
+    :mod:`local_flow.input.accessibility`).
+    """
+    from local_flow.input.accessibility import ACCESSIBILITY_HELP, accessibility_trusted
+
+    if accessibility_trusted() is False:
+        _err(f"warning: {ACCESSIBILITY_HELP}")
 
 
 if __name__ == "__main__":

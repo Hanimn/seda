@@ -185,24 +185,45 @@ def check_transcription_model(config: Config | None) -> CheckResult:
 
 
 def check_permissions() -> CheckResult:
-    """Guidance on required OS permissions (§20 "Required permissions").
+    """Report macOS permission state (§20 "Required permissions").
 
-    Runtime permission state (macOS TCC, Wayland compositor) cannot be probed
-    without triggering system prompts. This check surfaces the guidance note
-    rather than silently omitting the §20 requirement.
+    Accessibility (input monitoring) *can* be probed without a system prompt via
+    ``AXIsProcessTrusted`` — this is the permission global hotkeys actually
+    require, so we report it concretely (PASS/WARN). Microphone (TCC) state
+    cannot be probed without triggering a prompt, so it stays advisory.
     """
-    if sys.platform == "darwin":
+    if sys.platform != "darwin":
+        return CheckResult(
+            "Permissions",
+            Status.SKIP,
+            "permission checks are only implemented for macOS; "
+            "see docs/TROUBLESHOOTING.md for platform-specific guidance",
+        )
+
+    from local_flow.input.accessibility import accessibility_trusted
+
+    trusted = accessibility_trusted()
+    mic_note = "also verify Microphone permission (System Settings → Privacy & Security)"
+    if trusted is True:
+        return CheckResult(
+            "Permissions",
+            Status.PASS,
+            f"Accessibility granted (global hotkeys enabled); {mic_note}",
+        )
+    if trusted is False:
         return CheckResult(
             "Permissions",
             Status.WARN,
-            "macOS: verify Accessibility and Microphone permission for your terminal "
-            "(System Settings → Privacy & Security); see docs/TROUBLESHOOTING.md",
+            "Accessibility NOT granted — global hotkeys will not work; enable this app "
+            "under System Settings → Privacy & Security → Accessibility, then restart. "
+            "See docs/TROUBLESHOOTING.md",
         )
+    # Probe unavailable (e.g. HIServices import failed): fall back to guidance.
     return CheckResult(
         "Permissions",
-        Status.SKIP,
-        "permission checks are only implemented for macOS; "
-        "see docs/TROUBLESHOOTING.md for platform-specific guidance",
+        Status.WARN,
+        "macOS: verify Accessibility and Microphone permission for the app you launch "
+        "local-flow from (System Settings → Privacy & Security); see docs/TROUBLESHOOTING.md",
     )
 
 

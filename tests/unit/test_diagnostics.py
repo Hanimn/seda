@@ -242,8 +242,32 @@ class TestPermissionsCheck:
         assert result.status in (Status.PASS, Status.WARN, Status.SKIP)
         assert result.detail
 
-    def test_macos_gives_warn_with_guidance(self) -> None:
-        with patch("local_flow.diagnostics.sys") as mock_sys:
+    def test_macos_trusted_gives_pass(self) -> None:
+        with (
+            patch("local_flow.diagnostics.sys") as mock_sys,
+            patch("local_flow.input.accessibility.accessibility_trusted", return_value=True),
+        ):
+            mock_sys.platform = "darwin"
+            result = check_permissions()
+        assert result.status is Status.PASS
+        assert "Accessibility granted" in result.detail
+
+    def test_macos_untrusted_gives_warn_with_guidance(self) -> None:
+        with (
+            patch("local_flow.diagnostics.sys") as mock_sys,
+            patch("local_flow.input.accessibility.accessibility_trusted", return_value=False),
+        ):
+            mock_sys.platform = "darwin"
+            result = check_permissions()
+        assert result.status is Status.WARN
+        assert "NOT granted" in result.detail
+        assert "Accessibility" in result.detail
+
+    def test_macos_unknown_probe_falls_back_to_guidance(self) -> None:
+        with (
+            patch("local_flow.diagnostics.sys") as mock_sys,
+            patch("local_flow.input.accessibility.accessibility_trusted", return_value=None),
+        ):
             mock_sys.platform = "darwin"
             result = check_permissions()
         assert result.status is Status.WARN

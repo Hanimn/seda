@@ -280,6 +280,58 @@ def test_run_no_overlay_flag_skips_the_host(
     assert ran == ["run"], "the terminal path runs when the overlay is disabled"
 
 
+def test_run_warns_when_accessibility_untrusted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When macOS Accessibility is NOT granted, `run` prints a clear warning."""
+    import local_flow.app as app_module
+    import local_flow.input.accessibility as accessibility_module
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    monkeypatch.setattr(accessibility_module, "accessibility_trusted", lambda: False)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--no-overlay", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert "Accessibility" in result.output
+    assert "Privacy & Security" in result.output
+
+
+def test_run_silent_when_accessibility_trusted_or_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No accessibility warning when trusted (True) or unknown (None, e.g. non-macOS)."""
+    import local_flow.app as app_module
+    import local_flow.input.accessibility as accessibility_module
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    for probe in (True, None):
+        monkeypatch.setattr(
+            accessibility_module, "accessibility_trusted", lambda probe=probe: probe
+        )
+        result = runner.invoke(app, ["run", "--no-overlay", "--config", str(cfg)])
+        assert result.exit_code == 0
+        assert "Accessibility permission is not granted" not in result.output
+
+
 def test_run_falls_back_to_blocking_run_when_overlay_declines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
