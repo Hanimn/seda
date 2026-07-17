@@ -110,11 +110,16 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
             level = max(0.0, min(1.0, float(getattr(self, "_level", 0.0)) * 4.0))
             NSColor.whiteColor().colorWithAlphaComponent_(0.9).set()
             width, gap = 6.0, 4.0
+            # Center the bar cluster horizontally in the panel: total cluster
+            # width = N bars + (N-1) gaps; start so it's centered (NSView origin
+            # is bottom-left).
+            cluster = _BARS * width + (_BARS - 1) * gap
+            start_x = (bounds.size.width - cluster) / 2.0
             for i in range(_BARS):
                 # A simple symmetric meter: center bars taller than edges.
                 weight = 1.0 - abs(i - (_BARS - 1) / 2.0) / _BARS
                 h = max(2.0, bounds.size.height * 0.85 * level * weight)
-                x = 12.0 + i * (width + gap)
+                x = start_x + i * (width + gap)
                 NSBezierPath.bezierPathWithRect_(
                     NSMakeRect(x, (bounds.size.height - h) / 2.0, width, h)
                 ).fill()
