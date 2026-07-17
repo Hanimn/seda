@@ -68,6 +68,31 @@ def test_returns_false_when_build_raises_importerror(monkeypatch: pytest.MonkeyP
     assert ctrl.started is False  # never got to start()
 
 
+def test_returns_false_when_appkit_module_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing AppKit module (the real non-macOS case) fails open, not raises.
+
+    Regression: the `from AppKit import NSApplication` had been placed OUTSIDE
+    the fail-open try/except, so on a non-macOS host (or broken pyobjc) the
+    ModuleNotFoundError propagated instead of degrading to the terminal path.
+    Simulated here by making the AppKit import fail even on macOS.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "AppKit" or name.startswith("AppKit."):
+            raise ModuleNotFoundError("No module named 'AppKit'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    ctrl = _SpyController()
+    # build is the real default (build_overlay), which imports AppKit → fails.
+    assert run_with_overlay(ctrl, platform="darwin") is False  # type: ignore[arg-type]
+    assert ctrl.started is False
+
+
 def test_never_raises_into_the_caller() -> None:
     """An unexpected error bringing up the host degrades to False, never raises."""
 

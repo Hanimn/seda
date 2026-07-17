@@ -245,10 +245,12 @@ def run_with_overlay(
     # Fail-open covers ONLY acquiring AppKit + building the panel. If that
     # fails (non-macOS AppKit, import error, panel build error), the overlay is
     # unavailable and the caller safely falls back to controller.run() — the
-    # controller has NOT been started yet, so a retry is clean.
-    from AppKit import NSApplication
-
+    # controller has NOT been started yet, so a retry is clean. The AppKit import
+    # is INSIDE the try: on a non-macOS host (or a broken pyobjc install) it
+    # raises ModuleNotFoundError, which must fail open rather than propagate.
     try:
+        from AppKit import NSApplication
+
         app = NSApplication.sharedApplication()
         overlay = build_fn(lambda: controller.latest_level)
     except (ImportError, OSError) as exc:
