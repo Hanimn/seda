@@ -297,13 +297,21 @@ def _run_appkit_host(
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # Warm the macOS Text Input Source machinery on the MAIN thread before the
-    # pynput listener starts. pynput's darwin listener calls the Carbon TIS APIs
-    # (TISCopyCurrentKeyboardInputSource in keycode_context) from its own thread;
-    # once a full NSApplication owns the main run loop, initializing that TIS
-    # context concurrently on the listener thread can abort the process
-    # (SIGABRT). Priming it here on the main thread first avoids that race.
+    # Warm the macOS native machinery pynput's darwin listener touches on its
+    # OWN thread, doing it here on the MAIN thread first so those one-time,
+    # non-thread-safe initializations happen uncontended before the listener
+    # starts racing the NSApplication we just brought up. Two distinct hazards:
+    #   * the Carbon Text Input Source context (keycode_context / TIS) — a
+    #     concurrent first-init on the listener thread can abort the process
+    #     (SIGABRT);
+    #   * HIServices.AXIsProcessTrusted — pynput calls this at the very top of
+    #     its _run(); its first access goes through PyObjC's lazy-import
+    #     __getattr__, whose funcmap.pop() is not thread-safe, so racing the
+    #     main thread's framework loads raises KeyError: 'AXIsProcessTrusted'.
+    # Resolving each once on main caches it so the listener hits a plain,
+    # already-populated attribute and never re-enters the racy path.
     _warm_input_source()
+    _warm_accessibility_trust()
 
     controller.start()  # non-blocking setup (load model, start hotkeys, notify READY)
     app.run()  # blocks the main thread until app.stop_ is called
@@ -322,3 +330,26 @@ def _warm_input_source() -> None:
             pass
     except Exception:  # noqa: BLE001
         logger.debug("could not pre-warm keyboard input source", exc_info=True)
+
+
+def _warm_accessibility_trust() -> None:
+    """Prime ``HIServices.AXIsProcessTrusted`` on the main thread.
+
+    pynput's darwin listener calls ``HIServices.AXIsProcessTrusted()`` as the
+    first line of its ``_run()`` (on its own thread). That first access resolves
+    the symbol through PyObjC's lazy-import ``__getattr__``, whose
+    ``funcmap.pop(name)`` mutates shared, non-thread-safe state; racing the main
+    thread's framework loads (from the ``NSApplication`` we just started) can
+    raise ``KeyError: 'AXIsProcessTrusted'`` on the listener thread. Resolving it
+    once here caches it on the module so the listener hits a plain attribute and
+    never re-enters the racy path.
+
+    Best-effort: any failure is swallowed (the listener would resolve it lazily
+    as before). See :func:`_run_appkit_host` for why this matters.
+    """
+    try:
+        import HIServices
+
+        HIServices.AXIsProcessTrusted()
+    except Exception:  # noqa: BLE001
+        logger.debug("could not pre-warm accessibility-trust check", exc_info=True)
