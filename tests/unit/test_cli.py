@@ -202,6 +202,88 @@ def test_run_help_documents_no_cleanup() -> None:
     assert "no-cleanup" in plain
 
 
+def test_run_falls_back_to_blocking_run_when_overlay_declines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the GUI host returns False, cli.run() runs the controller's own loop (ADR-0001)."""
+    import local_flow.app as app_module
+    import local_flow.gui.host as host_module
+
+    ran: list[str] = []
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            ran.append("run")
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    # Overlay declines (non-macOS / unavailable / stub) → fallback path taken.
+    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller: False)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert ran == ["run"], "controller.run() should be the fallback when the overlay declines"
+
+
+def test_run_falls_back_when_overlay_host_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raising GUI host must never break `run` — it degrades to the blocking loop."""
+    import local_flow.app as app_module
+    import local_flow.gui.host as host_module
+
+    ran: list[str] = []
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            ran.append("run")
+
+    def _boom(controller: object) -> bool:
+        raise RuntimeError("host blew up")
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    monkeypatch.setattr(host_module, "run_with_overlay", _boom)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert ran == ["run"], "a raising overlay host must still reach controller.run()"
+
+
+def test_run_does_not_call_blocking_run_when_overlay_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the overlay host owns the loop (returns True), the fallback run() is skipped."""
+    import local_flow.app as app_module
+    import local_flow.gui.host as host_module
+
+    ran: list[str] = []
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:  # pragma: no cover - must NOT be called
+            ran.append("run")
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller: True)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert ran == [], "controller.run() must be skipped when the overlay host owns the loop"
+
+
 # --- transcribe (Phase 1) ---------------------------------------------------
 
 

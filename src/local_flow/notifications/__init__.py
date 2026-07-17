@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 from enum import StrEnum
-from typing import Any, TextIO
+from typing import Any, Protocol, TextIO, runtime_checkable
 
 
 class NotificationEvent(StrEnum):
@@ -22,6 +22,18 @@ class NotificationEvent(StrEnum):
     BUSY = "BUSY"
     ERROR = "ERROR"
     SUCCESS = "SUCCESS"
+
+
+@runtime_checkable
+class Notifier(Protocol):
+    """Anything that can surface a :class:`NotificationEvent` to the user.
+
+    ``ConsoleNotifier`` already satisfies this. The seam lets a GUI overlay be
+    added as a second notifier (ADR-0003's fan-out) without the controller
+    knowing which concrete notifiers are present.
+    """
+
+    def notify(self, event: NotificationEvent, **kwargs: Any) -> None: ...
 
 
 class ConsoleNotifier:
