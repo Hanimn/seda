@@ -96,10 +96,26 @@ class SounddeviceRecorder:
         self._stream: Any = None
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        # Most recent per-block RMS level (0.0 when idle), for the live overlay
+        # (ADR-0002). Pulled via the ``latest_level`` property from the GUI's
+        # main-thread timer; the audio thread only writes it.
+        self._latest_level: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @property
+    def latest_level(self) -> float:
+        """Most recent per-block RMS level (0.0 when idle).
+
+        Thread-safe pull for the live overlay (ADR-0002): the GUI's main-thread
+        timer reads this each tick. Reset to 0.0 on :meth:`start` and
+        :meth:`cancel`; after :meth:`stop` it retains the last value so the
+        bars settle rather than snapping to zero.
+        """
+        with self._lock:
+            return self._latest_level
 
     def start(self) -> None:
         """Open the microphone stream and begin collecting audio blocks."""
@@ -111,6 +127,7 @@ class SounddeviceRecorder:
         with self._lock:
             self._blocks = []
             self._overflow_count = 0
+            self._latest_level = 0.0
             self._stop_event.clear()
 
         try:
@@ -172,6 +189,7 @@ class SounddeviceRecorder:
         with self._lock:
             self._blocks = []
             self._overflow_count = 0
+            self._latest_level = 0.0
 
     # ------------------------------------------------------------------
     # Internal
@@ -191,8 +209,19 @@ class SounddeviceRecorder:
         if status:
             with self._lock:
                 self._overflow_count += 1
+        block = indata.copy()
+        # Compute the per-block RMS level for the overlay OUTSIDE the lock
+        # (cheap np math on the realtime thread; ADR-0002), then assign it under
+        # the existing lock alongside the block append. Any failure computing
+        # the level must never harm recording — swallow it (fail-open).
+        try:
+            level = _rms(block)
+        except Exception:  # noqa: BLE001
+            level = None
         with self._lock:
-            self._blocks.append(indata.copy())
+            self._blocks.append(block)
+            if level is not None:
+                self._latest_level = level
 
     def _close_stream(self) -> None:
         stream = self._stream

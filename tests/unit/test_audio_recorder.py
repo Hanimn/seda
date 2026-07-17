@@ -188,3 +188,62 @@ class TestSounddeviceRecorderStopProcessing:
         rec = self._make_recorder(monkeypatch, [short])
         with pytest.raises(RecordingTooShortError):
             rec.stop()
+
+
+class TestLatestLevel:
+    """The pulled per-block RMS hand-off for the overlay (ADR-0002)."""
+
+    def test_idle_level_is_zero(self):
+        rec = SounddeviceRecorder(RecorderConfig())
+        assert rec.latest_level == 0.0
+
+    def test_callback_updates_level_to_block_rms(self):
+        from local_flow.audio.recorder import _rms
+
+        rec = SounddeviceRecorder(RecorderConfig())
+        block = _tone(1024, 0.4).reshape(-1, 1)
+        rec._callback(block, 1024, None, None)
+        # latest_level reflects the RMS of the block just seen.
+        assert rec.latest_level == pytest.approx(_rms(block), rel=1e-6)
+        assert rec.latest_level > 0.0
+
+    def test_silence_block_gives_near_zero_level(self):
+        rec = SounddeviceRecorder(RecorderConfig())
+        rec._callback(_silence(1024).reshape(-1, 1), 1024, None, None)
+        assert rec.latest_level == pytest.approx(0.0, abs=1e-6)
+
+    def test_cancel_resets_level_to_zero(self, monkeypatch):
+        rec = SounddeviceRecorder(RecorderConfig())
+        rec._callback(_tone(1024, 0.4).reshape(-1, 1), 1024, None, None)
+        assert rec.latest_level > 0.0
+        # cancel() must not require a real stream.
+        monkeypatch.setattr(rec, "_close_stream", lambda: None)
+        rec.cancel()
+        assert rec.latest_level == 0.0
+
+    def test_level_held_after_stop(self, monkeypatch):
+        # After stop(), latest_level retains the last value (bars settle, ADR-0002).
+        rec = SounddeviceRecorder(RecorderConfig(min_duration_ms=1))
+        block = _tone(RATE, 0.4).reshape(-1, 1)
+        rec._callback(block, RATE, None, None)
+        held = rec.latest_level
+        assert held > 0.0
+        monkeypatch.setattr(rec, "_close_stream", lambda: None)
+        rec.stop()
+        assert rec.latest_level == pytest.approx(held, rel=1e-6)
+
+    def test_raising_rms_never_breaks_recording(self, monkeypatch):
+        # If level computation raises, the block is still recorded and the
+        # callback does not propagate (fail-open, ADR-0002).
+        import local_flow.audio.recorder as recorder_mod
+
+        def _boom(_samples):
+            raise RuntimeError("rms exploded")
+
+        monkeypatch.setattr(recorder_mod, "_rms", _boom)
+        rec = SounddeviceRecorder(RecorderConfig())
+        block = _tone(1024, 0.4).reshape(-1, 1)
+        rec._callback(block, 1024, None, None)  # must not raise
+        # The block was still captured; the level simply stayed at its prior value.
+        assert len(rec._blocks) == 1
+        assert rec.latest_level == 0.0
