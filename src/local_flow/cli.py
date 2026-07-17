@@ -191,9 +191,15 @@ def run(
         "--no-cleanup",
         help="Disable optional LLM cleanup for this run, regardless of config.",
     ),
+    no_overlay: bool = typer.Option(
+        False,
+        "--no-overlay",
+        help="Disable the macOS recording overlay for this run, regardless of config.",
+    ),
 ) -> None:
     """Run the background dictation loop."""
     from local_flow.app import AppController
+    from local_flow.config import select_overlay_enabled
 
     cfg = _safe_load(config)
     configure_logging(cfg)
@@ -201,17 +207,25 @@ def run(
     cleanup_enabled = None if not no_cleanup else False
     controller = AppController(cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled)
 
-    # On macOS the overlay GUI host owns the main thread and drives the
-    # controller (ADR-0001). It fails open — returning False on non-macOS, an
-    # AppKit failure, or the not-yet-implemented panel — in which case we run
-    # the controller's own blocking loop, exactly as before. Any unexpected
-    # error bringing up the host must also degrade to the terminal path.
-    try:
-        from local_flow.gui.host import run_with_overlay
+    # Resolve whether the overlay is *requested* (ADR-0004): --no-overlay >
+    # explicit config > platform. Even when requested, the GUI host still fails
+    # open if AppKit is unavailable (ADR-0001), so a non-macOS request is
+    # neutralized there. When not requested, skip the host entirely.
+    overlay_requested = select_overlay_enabled(cfg.overlay, no_overlay=no_overlay)
 
-        hosted = run_with_overlay(controller)
-    except Exception:  # noqa: BLE001
-        hosted = False
+    hosted = False
+    if overlay_requested:
+        # On macOS the overlay GUI host owns the main thread and drives the
+        # controller. It fails open — returning False on non-macOS, an AppKit
+        # failure, or the not-yet-implemented panel — in which case we run the
+        # controller's own blocking loop, exactly as before. Any unexpected
+        # error bringing up the host must also degrade to the terminal path.
+        try:
+            from local_flow.gui.host import run_with_overlay
+
+            hosted = run_with_overlay(controller)
+        except Exception:  # noqa: BLE001
+            hosted = False
     if not hosted:
         controller.run()
 

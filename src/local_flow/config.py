@@ -278,6 +278,21 @@ class NotificationsConfig(_Section):
     error_sound: str = ""
 
 
+class OverlayConfig(_Section):
+    """Live recording waveform overlay (macOS only; epic #15).
+
+    ``enabled`` is tri-state: ``None`` (the default) defers to the platform —
+    on by default on macOS, off elsewhere — while an explicit ``true``/``false``
+    pins the choice on every platform. This mirrors the hotkeys
+    ``push_to_talk = ""`` defer-to-platform idiom rather than baking OS logic
+    into the field default; :func:`select_overlay_enabled` resolves the
+    effective value. Tuning fields (bar count, opacity, fps) are intentionally
+    not exposed yet — they await a prototype (ADR-0004).
+    """
+
+    enabled: bool | None = None
+
+
 class Config(_Section):
     """The complete, validated Local Flow configuration."""
 
@@ -289,6 +304,7 @@ class Config(_Section):
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
     paste: PasteConfig = Field(default_factory=PasteConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    overlay: OverlayConfig = Field(default_factory=OverlayConfig)
 
     def effective(self) -> dict[str, Any]:
         """Return a privacy-safe view of the effective configuration.
@@ -397,6 +413,29 @@ def select_push_to_talk(config: HotkeysConfig, *, platform: str | None = None) -
     return str(getattr(config, f"push_to_talk_{_platform_key(plat)}"))
 
 
+def select_overlay_enabled(
+    config: OverlayConfig, *, no_overlay: bool = False, platform: str | None = None
+) -> bool:
+    """Return whether the overlay should be *requested* (ADR-0004).
+
+    Precedence: ``--no-overlay`` (``no_overlay=True``) forces off; else an
+    explicit config ``enabled`` (``True``/``False``) wins on every platform;
+    else (``enabled is None``) the platform decides — macOS on, others off.
+
+    This is only a *request*: the GUI host still fails open if AppKit is
+    unavailable, so a non-macOS ``enabled=True`` is neutralized there rather
+    than by an explicit platform rule (see ADR-0004). ``platform`` is injectable
+    (defaults to :data:`sys.platform`) so tests stay deterministic, mirroring
+    :func:`select_push_to_talk`.
+    """
+    if no_overlay:
+        return False
+    if config.enabled is not None:
+        return config.enabled
+    plat = platform if platform is not None else sys.platform
+    return _platform_key(plat) == "macos"
+
+
 def _validate_cleanup_url(field: str, value: str, *, allow_remote: bool) -> None:
     """Validate a cleanup endpoint URL and enforce the loopback-only default.
 
@@ -500,6 +539,11 @@ def _render_toml(data: dict[str, Any]) -> str:
     scalars: list[str] = []
     tables: list[str] = []
     for key, value in data.items():
+        if value is None:
+            # TOML has no null; an unset optional (e.g. overlay.enabled = None,
+            # meaning "defer to platform") is represented by omission and reads
+            # back as None. Skip it.
+            continue
         if isinstance(value, dict):
             tables.append(_render_table(key, value))
         else:
@@ -516,6 +560,10 @@ def _render_table(name: str, table: dict[str, Any]) -> str:
     lines = [f"[{name}]"]
     subtables: list[str] = []
     for key, value in table.items():
+        if value is None:
+            # Omit unset optionals (see _render_toml); an absent key reads back
+            # as None ("defer to platform").
+            continue
         if isinstance(value, dict):
             subtables.append(_render_table(f"{name}.{key}", value))
         elif isinstance(value, list) and value and isinstance(value[0], dict):
