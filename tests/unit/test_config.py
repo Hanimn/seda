@@ -307,6 +307,64 @@ class TestSelectPushToTalk:
         assert cfg.toggle_mode_linux == "<ctrl>+<alt>+m"
 
 
+class TestSelectOverlayEnabled:
+    """Overlay enable resolution: flag > explicit config > platform (ADR-0004)."""
+
+    def test_default_none_is_on_for_macos(self) -> None:
+        from local_flow.config import OverlayConfig, select_overlay_enabled
+
+        assert select_overlay_enabled(OverlayConfig(), platform="darwin") is True
+
+    def test_default_none_is_off_for_others(self) -> None:
+        from local_flow.config import OverlayConfig, select_overlay_enabled
+
+        assert select_overlay_enabled(OverlayConfig(), platform="win32") is False
+        assert select_overlay_enabled(OverlayConfig(), platform="linux") is False
+
+    def test_no_overlay_flag_forces_off_even_on_macos(self) -> None:
+        from local_flow.config import OverlayConfig, select_overlay_enabled
+
+        # Flag wins over everything, including an explicit enabled=True.
+        assert (
+            select_overlay_enabled(OverlayConfig(enabled=True), no_overlay=True, platform="darwin")
+            is False
+        )
+
+    def test_explicit_true_wins_on_every_platform(self) -> None:
+        from local_flow.config import OverlayConfig, select_overlay_enabled
+
+        cfg = OverlayConfig(enabled=True)
+        assert select_overlay_enabled(cfg, platform="darwin") is True
+        # Note: on non-macOS this only *requests* the overlay; the GUI host then
+        # fails open (no AppKit). Resolution here still returns True (ADR-0004).
+        assert select_overlay_enabled(cfg, platform="linux") is True
+
+    def test_explicit_false_wins_on_macos(self) -> None:
+        from local_flow.config import OverlayConfig, select_overlay_enabled
+
+        assert select_overlay_enabled(OverlayConfig(enabled=False), platform="darwin") is False
+
+
+class TestOverlayConfig:
+    def test_default_enabled_is_none(self) -> None:
+        from local_flow.config import OverlayConfig
+
+        assert OverlayConfig().enabled is None
+
+    def test_overlay_section_loads_from_dict(self) -> None:
+        config = load_config_from_dict({"overlay": {"enabled": True}})
+        assert config.overlay.enabled is True
+
+    def test_overlay_defaults_when_absent(self) -> None:
+        config = load_config_from_dict({})
+        assert config.overlay.enabled is None
+
+    def test_overlay_rejects_unknown_key(self) -> None:
+        # _Section uses extra="forbid" — a typo must be caught.
+        with pytest.raises(ConfigError):
+            load_config_from_dict({"overlay": {"enabledd": True}})
+
+
 def test_empty_push_to_talk_override_is_allowed() -> None:
     # Empty override means "use the platform default" — must not be rejected.
     config = load_config_from_dict({"hotkeys": {"push_to_talk": ""}})

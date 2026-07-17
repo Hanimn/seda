@@ -202,6 +202,43 @@ def test_run_help_documents_no_cleanup() -> None:
     assert "no-cleanup" in plain
 
 
+def test_run_help_documents_no_overlay() -> None:
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "no-overlay" in plain
+
+
+def test_run_no_overlay_flag_skips_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--no-overlay` must not even attempt the GUI host; it runs the terminal path."""
+    import local_flow.app as app_module
+    import local_flow.gui.host as host_module
+
+    ran: list[str] = []
+    host_calls: list[str] = []
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            ran.append("run")
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    monkeypatch.setattr(
+        host_module, "run_with_overlay", lambda controller: host_calls.append("host") or True
+    )
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--no-overlay", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert host_calls == [], "--no-overlay must skip run_with_overlay entirely"
+    assert ran == ["run"], "the terminal path runs when the overlay is disabled"
+
+
 def test_run_falls_back_to_blocking_run_when_overlay_declines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -222,7 +259,11 @@ def test_run_falls_back_to_blocking_run_when_overlay_declines(
     # Overlay declines (non-macOS / unavailable / stub) → fallback path taken.
     monkeypatch.setattr(host_module, "run_with_overlay", lambda controller: False)
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+    # Request the overlay explicitly so the host is attempted on any platform
+    # (ADR-0004: enabled=True wins over the platform default).
+    cfg.write_text(
+        '[transcription]\nbackend = "fake"\n[overlay]\nenabled = true\n', encoding="utf-8"
+    )
 
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code == 0
@@ -251,7 +292,9 @@ def test_run_falls_back_when_overlay_host_raises(
     monkeypatch.setattr(app_module, "AppController", _StubController)
     monkeypatch.setattr(host_module, "run_with_overlay", _boom)
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+    cfg.write_text(
+        '[transcription]\nbackend = "fake"\n[overlay]\nenabled = true\n', encoding="utf-8"
+    )
 
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code == 0
@@ -277,7 +320,9 @@ def test_run_does_not_call_blocking_run_when_overlay_hosts(
     monkeypatch.setattr(app_module, "AppController", _StubController)
     monkeypatch.setattr(host_module, "run_with_overlay", lambda controller: True)
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+    cfg.write_text(
+        '[transcription]\nbackend = "fake"\n[overlay]\nenabled = true\n', encoding="utf-8"
+    )
 
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code == 0
