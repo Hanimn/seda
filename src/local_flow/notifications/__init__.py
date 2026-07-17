@@ -7,9 +7,13 @@ never transcript text, clipboard contents, or secrets.
 
 from __future__ import annotations
 
+import logging
 import sys
+from collections.abc import Callable, Sequence
 from enum import StrEnum
 from typing import Any, Protocol, TextIO, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 class NotificationEvent(StrEnum):
@@ -92,3 +96,79 @@ class ConsoleNotifier:
                 return f"[done] {char_count} characters"
             return "[done]"
         return f"[{event.value.lower()}]"
+
+
+class FanOutNotifier:
+    """Forwards each event to several notifiers (ADR-0003).
+
+    The controller holds a single :class:`Notifier`; this lets a GUI overlay be
+    added alongside the console notifier without the controller knowing. Each
+    child notifier's exceptions are **swallowed** so one failing notifier never
+    breaks another — and never breaks recording.
+    """
+
+    def __init__(self, notifiers: Sequence[Notifier]) -> None:
+        self._notifiers: list[Notifier] = list(notifiers)
+
+    def notify(self, event: NotificationEvent, **kwargs: Any) -> None:
+        for notifier in self._notifiers:
+            try:
+                notifier.notify(event, **kwargs)
+            except Exception:  # noqa: BLE001
+                # A broken notifier must not affect the others or dictation.
+                logger.warning("notifier %r failed for %s", notifier, event, exc_info=True)
+
+
+class OverlayNotifier:
+    """Drives the overlay's show/hide off the notification stream (ADR-0003).
+
+    Maps ``RECORDING`` → show and ``CANCELLED``/``SUCCESS``/``ERROR`` → hide;
+    all other events are ignored (the overlay is a RECORDING-only HUD). Because
+    ``notify`` runs on the hotkey-listener / worker threads but AppKit must run
+    on the main thread (ADR-0001), the show/hide calls are **marshalled onto the
+    main thread** via an injected ``dispatch_main`` callable. Show/hide are
+    **idempotent** (show-when-shown / hide-when-hidden are no-ops); a broken
+    overlay is swallowed (fail-open — no HUD, never a blocked dictation).
+    """
+
+    _HIDE_EVENTS = frozenset(
+        {NotificationEvent.CANCELLED, NotificationEvent.SUCCESS, NotificationEvent.ERROR}
+    )
+
+    def __init__(
+        self,
+        *,
+        show: Callable[[], None],
+        hide: Callable[[], None],
+        dispatch_main: Callable[[Callable[[], None]], None],
+    ) -> None:
+        self._show = show
+        self._hide = hide
+        self._dispatch_main = dispatch_main
+        self._visible = False
+
+    def notify(self, event: NotificationEvent, **kwargs: Any) -> None:
+        if event is NotificationEvent.RECORDING:
+            self._request(show=True)
+        elif event in self._HIDE_EVENTS:
+            self._request(show=False)
+        # READY / BUSY / TRANSCRIBING are not show/hide events — ignore.
+
+    def _request(self, *, show: bool) -> None:
+        # Idempotent: skip if already in the requested visibility.
+        if show == self._visible:
+            return
+        self._visible = show
+        action = self._show if show else self._hide
+
+        def _run() -> None:
+            try:
+                action()
+            except Exception:  # noqa: BLE001
+                # Fail-open: a broken overlay must never harm dictation.
+                logger.warning("overlay show/hide failed", exc_info=True)
+
+        try:
+            self._dispatch_main(_run)
+        except Exception:  # noqa: BLE001
+            logger.warning("overlay dispatch_main failed", exc_info=True)
