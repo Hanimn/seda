@@ -277,9 +277,14 @@ class PynputPasteBackend:
         self._controller: object | None = None
 
     def send_paste(self, shortcut: str) -> None:
+        # Validate the shortcut BEFORE importing pynput. The Enter/Return
+        # refusal is a safety guarantee and must hold even where the GUI
+        # backend cannot be imported (e.g. headless Linux with no X display),
+        # so it must not sit behind the pynput import.
+        modifiers, main_key = self._parse(shortcut)
+
         from pynput import keyboard
 
-        modifiers, main_key = self._parse(shortcut)
         controller = self._get_controller()
 
         resolved_mods = [self._resolve_key(keyboard, m) for m in modifiers]

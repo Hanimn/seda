@@ -58,7 +58,13 @@ def _make_controller(
     cfg = config or Config()
     hotkeys = FakeHotkeyProvider()
     be = backend or FakeBackend()
-    kwargs: dict[str, object] = {"hotkey_provider": hotkeys, "backend": be}
+    kwargs: dict[str, object] = {
+        "hotkey_provider": hotkeys,
+        "backend": be,
+        # Inject a fake inserter so unit tests never construct the real
+        # pynput-backed paste path (which cannot import on headless Linux).
+        "text_inserter": _RecordingInserter(),
+    }
     if cleanup_provider is not None:
         kwargs["cleanup_provider"] = cleanup_provider
     ctrl = AppController(cfg, **kwargs)  # type: ignore[arg-type]

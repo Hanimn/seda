@@ -309,6 +309,19 @@ class TestPynputPasteBackendParsing:
         with pytest.raises(PasteError, match="Enter"):
             backend.send_paste("enter")
 
+    def test_refuses_enter_even_when_pynput_cannot_import(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # SAFETY: the Enter/Return refusal must hold even on a headless system
+        # where pynput cannot be imported (no X display). Validation runs before
+        # the pynput import, so a PasteError is raised, not an ImportError (#14).
+        import sys
+
+        monkeypatch.setitem(sys.modules, "pynput", None)
+        backend = PynputPasteBackend()
+        with pytest.raises(PasteError, match="Enter"):
+            backend.send_paste("ctrl+return")
+
     def test_refuses_return_as_main_key(self) -> None:
         backend = PynputPasteBackend()
         with pytest.raises(PasteError, match="Enter"):
