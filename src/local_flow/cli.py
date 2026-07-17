@@ -198,9 +198,24 @@ def run(
     ),
 ) -> None:
     """Run the background dictation loop."""
+    import warnings
+
     from local_flow.app import AppController
     from local_flow.config import select_overlay_enabled
     from local_flow.notifications import ConsoleNotifier, FanOutNotifier
+
+    # Silence a benign, non-deterministic warning emitted at interpreter
+    # shutdown by a native dependency (ctranslate2/faster-whisper spins native
+    # worker pools; the multiprocessing resource_tracker then can't account for
+    # a semaphore it didn't create). The OS reclaims it — it never affects
+    # dictation. Scoped to this EXACT message + category + module so it can
+    # never mask an unrelated leak (see #29). Do not broaden this filter.
+    warnings.filterwarnings(
+        "ignore",
+        message=r"resource_tracker: There appear to be \d+ leaked semaphore objects",
+        category=UserWarning,
+        module=r"multiprocessing\.resource_tracker",
+    )
 
     cfg = _safe_load(config)
     logger = configure_logging(cfg)

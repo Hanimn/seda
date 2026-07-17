@@ -209,6 +209,47 @@ def test_run_help_documents_no_overlay() -> None:
     assert "no-overlay" in plain
 
 
+def test_run_scopes_the_semaphore_warning_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` suppresses ONLY the benign leaked-semaphore warning (#29), not others."""
+    import warnings
+
+    import local_flow.app as app_module
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    # Snapshot filters so this test doesn't leak state into others.
+    with warnings.catch_warnings():
+        result = runner.invoke(app, ["run", "--no-overlay", "--config", str(cfg)])
+        assert result.exit_code == 0
+
+        # The exact semaphore message is suppressed...
+        assert warnings.filters and any(
+            f[0] == "ignore"
+            and f[2] is UserWarning
+            and f[1] is not None
+            and f[1].search("resource_tracker: There appear to be 3 leaked semaphore objects")
+            for f in warnings.filters
+        ), "run() must install an ignore filter matching the leaked-semaphore message"
+
+        # ...but an unrelated warning is NOT matched by that same filter.
+        assert not any(
+            f[0] == "ignore" and f[1] is not None and f[1].search("some unrelated warning")
+            for f in warnings.filters
+            if f[2] is UserWarning
+        ), "the filter must not match unrelated warnings"
+
+
 def test_run_no_overlay_flag_skips_the_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
