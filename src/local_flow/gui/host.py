@@ -282,5 +282,28 @@ def _run_appkit_host(
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
+    # Warm the macOS Text Input Source machinery on the MAIN thread before the
+    # pynput listener starts. pynput's darwin listener calls the Carbon TIS APIs
+    # (TISCopyCurrentKeyboardInputSource in keycode_context) from its own thread;
+    # once a full NSApplication owns the main run loop, initializing that TIS
+    # context concurrently on the listener thread can abort the process
+    # (SIGABRT). Priming it here on the main thread first avoids that race.
+    _warm_input_source()
+
     controller.start()  # non-blocking setup (load model, start hotkeys, notify READY)
     app.run()  # blocks the main thread until app.stop_ is called
+
+
+def _warm_input_source() -> None:
+    """Prime pynput's Carbon keycode/Text-Input-Source context on the main thread.
+
+    Best-effort: any failure is swallowed (the listener would just initialize it
+    lazily as before). See :func:`_run_appkit_host` for why this matters.
+    """
+    try:
+        from pynput._util.darwin import keycode_context
+
+        with keycode_context():
+            pass
+    except Exception:  # noqa: BLE001
+        logger.debug("could not pre-warm keyboard input source", exc_info=True)
