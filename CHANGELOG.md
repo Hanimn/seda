@@ -6,9 +6,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-## [0.1.0] — 2026-07-16
+## [0.1.0] — 2026-07-17
 
-First release candidate. Implements the full MVP (Phases 0–8).
+First release. Implements the full MVP (Phases 0–8), verified end-to-end on
+macOS via the §39 procedure.
 
 ### Added
 
@@ -71,6 +72,23 @@ First release candidate. Implements the full MVP (Phases 0–8).
 - `docs/CLAUDE_CODE_USAGE.md` — prompt styles, modes, multiline policy, known limitations.
 - `CHANGELOG.md` (this file).
 
+### Fixed
+
+Found during on-device (§39) verification on macOS:
+- **Platform-aware push-to-talk default** (#9): the default hotkey is now
+  `<ctrl>+<shift>+space` on macOS (avoids the input-source switcher and
+  Spotlight), with per-platform `push_to_talk_*` config fields and a runtime
+  selector. Windows/Linux keep `<ctrl>+<alt>+space`.
+- **Recording no longer stops on any key release** (#10): releasing a modifier
+  of a multi-key chord previously ended the hold immediately, producing empty
+  recordings; release is now tied to the trigger key.
+- **Push-to-talk keys no longer leak to the focused app** (#11, #12): on macOS
+  the chord keys are suppressed via `darwin_intercept`, but only while the
+  chord is engaged — so ordinary typing (including the space bar) keeps working
+  system-wide. This closes an Enter/newline-injection safety issue.
+- **Cancel (Esc) key no longer leaks** during a hold (#13), while a bare Esc
+  still reaches the focused app when idle.
+
 ### Known limitations
 
 - **Wayland**: global hotkeys and simulated input do not work on Wayland compositors without additional setup. See `docs/TROUBLESHOOTING.md`.
@@ -80,6 +98,7 @@ First release candidate. Implements the full MVP (Phases 0–8).
 - **Windows**: CI passes on Windows but the release has not been manually verified on Windows. Consider this platform untested.
 - **Terminal paste behaviour**: multiline paste behaviour varies by terminal configuration. Set `paste.multiline_policy = "flatten"` if you experience unexpected command execution.
 - **Copy-only hotkey**: a dedicated second hotkey for copy-only mode is not implemented; use `--no-paste` or `paste.multiline_policy = "copy_only"` instead.
+- **Key suppression is macOS-only**: the focused-app key-suppression fixes (#11–#13) use the macOS `darwin_intercept` path. Windows (`win32_event_filter`) and Linux suppression are follow-ups; on those platforms the push-to-talk chord may still pass through to the focused application.
 
 ---
 
