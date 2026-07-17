@@ -126,6 +126,16 @@ class AppController:
     # Public API
     # ------------------------------------------------------------------
 
+    @property
+    def latest_level(self) -> float:
+        """Most recent per-block audio RMS level (0.0 when idle).
+
+        A read-only pass-through to the recorder (ADR-0002), so a GUI host
+        (ADR-0001) can drive the overlay's level meter without reaching into
+        the controller's internals.
+        """
+        return self._recorder.latest_level
+
     def start(self) -> None:
         """Load the model and start hotkey listening — the non-blocking setup.
 

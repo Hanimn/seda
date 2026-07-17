@@ -228,7 +228,7 @@ def test_run_no_overlay_flag_skips_the_host(
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
     monkeypatch.setattr(
-        host_module, "run_with_overlay", lambda controller: host_calls.append("host") or True
+        host_module, "run_with_overlay", lambda controller, **kw: host_calls.append("host") or True
     )
     cfg = tmp_path / "config.toml"
     cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
@@ -257,7 +257,7 @@ def test_run_falls_back_to_blocking_run_when_overlay_declines(
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
     # Overlay declines (non-macOS / unavailable / stub) → fallback path taken.
-    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller: False)
+    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller, **kw: False)
     cfg = tmp_path / "config.toml"
     # Request the overlay explicitly so the host is attempted on any platform
     # (ADR-0004: enabled=True wins over the platform default).
@@ -318,7 +318,7 @@ def test_run_does_not_call_blocking_run_when_overlay_hosts(
             ran.append("run")
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
-    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller: True)
+    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller, **kw: True)
     cfg = tmp_path / "config.toml"
     cfg.write_text(
         '[transcription]\nbackend = "fake"\n[overlay]\nenabled = true\n', encoding="utf-8"

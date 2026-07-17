@@ -200,12 +200,19 @@ def run(
     """Run the background dictation loop."""
     from local_flow.app import AppController
     from local_flow.config import select_overlay_enabled
+    from local_flow.notifications import ConsoleNotifier, FanOutNotifier
 
     cfg = _safe_load(config)
     configure_logging(cfg)
     # ``--no-cleanup`` force-disables cleanup; otherwise the config flag decides.
     cleanup_enabled = None if not no_cleanup else False
-    controller = AppController(cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled)
+
+    # The controller's notifier is a fan-out so the overlay can be added as a
+    # second notifier (ADR-0003). Console is always present.
+    notifier = FanOutNotifier([ConsoleNotifier(enabled=cfg.notifications.console_enabled)])
+    controller = AppController(
+        cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled, notifier=notifier
+    )
 
     # Resolve whether the overlay is *requested* (ADR-0004): --no-overlay >
     # explicit config > platform. Even when requested, the GUI host still fails
@@ -216,14 +223,25 @@ def run(
     hosted = False
     if overlay_requested:
         # On macOS the overlay GUI host owns the main thread and drives the
-        # controller. It fails open — returning False on non-macOS, an AppKit
-        # failure, or the not-yet-implemented panel — in which case we run the
-        # controller's own blocking loop, exactly as before. Any unexpected
-        # error bringing up the host must also degrade to the terminal path.
+        # controller. It fails open — returning False on non-macOS or an AppKit
+        # failure — in which case we run the controller's own blocking loop,
+        # exactly as before. Any unexpected error must also degrade to terminal.
         try:
-            from local_flow.gui.host import run_with_overlay
+            from local_flow.gui.host import Overlay, run_with_overlay
+            from local_flow.notifications import OverlayNotifier
 
-            hosted = run_with_overlay(controller)
+            def _register(overlay: Overlay) -> None:
+                # Wire the built panel's show/hide into the fan-out (ADR-0003):
+                # RECORDING -> show, terminal -> hide, marshalled onto main.
+                notifier.add(
+                    OverlayNotifier(
+                        show=overlay.show,
+                        hide=overlay.hide,
+                        dispatch_main=overlay.dispatch_main,
+                    )
+                )
+
+            hosted = run_with_overlay(controller, register_overlay=_register)
         except Exception:  # noqa: BLE001
             hosted = False
     if not hosted:
