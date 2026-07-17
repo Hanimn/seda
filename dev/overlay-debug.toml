@@ -1,0 +1,30 @@
+# Overlay manual-test config (epic #15 / ADR-0005 §39 checklist).
+#
+#   uv run local-flow run --config dev/overlay-debug.toml
+#
+# Uses the fake transcription backend so the app is READY instantly (no Whisper
+# model download/load), letting you exercise the OVERLAY flow in isolation:
+# hold the push-to-talk hotkey and watch the bottom-center HUD.
+#
+# NOTE: still requires Accessibility permission for your terminal
+# (System Settings > Privacy & Security > Accessibility) or the push-to-talk
+# hotkey is blocked and the overlay never triggers.
+
+[transcription]
+# No model load — READY is immediate. Dictation "transcribes" to a fixed string,
+# which is fine: we're testing the overlay, not transcription.
+backend = "fake"
+
+[overlay]
+# Force the overlay on regardless of platform default (it's on by default on
+# macOS anyway; explicit here so the file is self-documenting).
+enabled = true
+
+[app]
+# DEBUG surfaces the state transitions and any overlay show/hide logging so a
+# failing hold is diagnosable.
+log_level = "DEBUG"
+
+[cleanup]
+# Keep the LLM cleanup pass off so nothing else loads.
+enabled = false

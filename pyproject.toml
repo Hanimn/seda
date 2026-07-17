@@ -34,6 +34,13 @@ dependencies = [
   "pydantic>=2.6,<3",
   "platformdirs>=4,<5",
   "typer>=0.12,<1",
+  # AppKit (NSPanel/NSWindow/NSApplication) for the macOS recording overlay
+  # (epic #15). Pulled transitively by pynput today via Quartz, but declared
+  # explicitly so the overlay's presence does not depend on another package's
+  # dependency graph. The marker keeps it off Linux/Windows installs,
+  # including headless CI. The runtime still lazy-imports it under try/except
+  # (gui/host.py), so a broken install fails open to terminal mode.
+  "pyobjc-framework-Cocoa>=10.1; sys_platform == \"darwin\"",
 ]
 
 [project.optional-dependencies]
@@ -113,6 +120,9 @@ module = [
   "sounddevice.*",
   "pynput.*",
   "Quartz.*",
+  "AppKit.*",
+  "Foundation.*",
+  "objc.*",
   "pyperclip.*",
   "faster_whisper.*",
   "ctranslate2.*",

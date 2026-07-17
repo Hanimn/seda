@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Local Flow — recording HUD designs</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    color: #e8e8ea;
+    background:
+      radial-gradient(1200px 800px at 20% -10%, #2a3b57 0%, transparent 60%),
+      radial-gradient(1000px 700px at 90% 20%, #4a2d4d 0%, transparent 55%),
+      linear-gradient(135deg, #14161c 0%, #1c2230 100%);
+    min-height: 100vh;
+  }
+  header { padding: 20px 24px 8px; }
+  header h1 { font-size: 18px; margin: 0 0 4px; font-weight: 600; }
+  header p { margin: 0; opacity: 0.65; max-width: 720px; }
+
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    padding: 12px 24px; position: sticky; top: 0; z-index: 5;
+    background: rgba(16,18,24,0.72);
+    backdrop-filter: saturate(140%) blur(10px);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .controls label { display: inline-flex; gap: 6px; align-items: center; opacity: 0.9; }
+  .controls .spacer { flex: 1; }
+  .controls input[type=range] { width: 160px; }
+  button, select {
+    font: inherit; color: inherit; background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.16); border-radius: 8px;
+    padding: 6px 10px; cursor: pointer;
+  }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.1); }
+
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px; padding: 24px;
+  }
+  .card {
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 14px;
+    background: rgba(255,255,255,0.03); padding: 18px 18px 14px;
+    display: flex; flex-direction: column; gap: 10px; align-items: center;
+  }
+  .card .num { align-self: flex-start; font-weight: 700; opacity: 0.9; }
+  .card .name { align-self: flex-start; margin-top: -6px; opacity: 0.6; font-size: 12px; }
+  .stage {
+    width: 320px; height: 120px; border-radius: 12px;
+    display: grid; place-items: center;
+    background:
+      repeating-linear-gradient(45deg, rgba(255,255,255,0.03) 0 12px, transparent 12px 24px),
+      #0d0f14;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .desc { align-self: flex-start; font-size: 12px; opacity: 0.7; }
+  footer { padding: 8px 24px 28px; opacity: 0.55; }
+  code { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 5px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Local Flow — recording HUD designs</h1>
+    <p>
+      Eight styles for the floating "it's hearing me" overlay (epic #15). Each is driven by a
+      shared simulated voice level so you can watch it react. Real panel is ~160×48pt,
+      translucent, bottom-center; these render at 2× for legibility. Pick a number and I'll
+      implement it in <code>gui/host.py</code>.
+    </p>
+  </header>
+
+  <div class="controls">
+    <label>Voice
+      <select id="mode">
+        <option value="speech">simulated speech</option>
+        <option value="steady">steady tone</option>
+        <option value="quiet">quiet</option>
+        <option value="loud">loud</option>
+        <option value="manual">manual slider</option>
+      </select>
+    </label>
+    <label>Level <input id="level" type="range" min="0" max="1" step="0.01" value="0.5" /></label>
+    <label><input id="rounded" type="checkbox" checked /> rounded pill</label>
+    <span class="pill" id="lvlreadout">0.50</span>
+    <span class="spacer"></span>
+    <button id="pause">Pause</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    Real constraints: translucent rounded rect (~55% black), white marks, no shadow,
+    click-through, bottom-center. Colors/opacity are all tweakable once you pick a shape.
+  </footer>
+
+<script>
+let t = 0, paused = false, manual = 0.5;
+function levelFor(mode) {
+  if (mode === 'manual') return manual;
+  if (mode === 'steady') return 0.55;
+  if (mode === 'quiet')  return 0.12 + 0.06 * Math.sin(t * 2);
+  if (mode === 'loud')   return 0.8 + 0.18 * Math.abs(Math.sin(t * 6));
+  const env = 0.5 + 0.42 * Math.sin(t * 1.7) * Math.sin(t * 0.6 + 1);
+  const micro = 0.08 * Math.sin(t * 14);
+  return Math.max(0.03, Math.min(1, Math.abs(env) + micro));
+}
+
+const W = 320, H = 96, PAD = 16;
+
+function bg(ctx, rounded) {
+  ctx.clearRect(0, 0, W, H);
+  const r = rounded ? 16 : 6;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  roundRect(ctx, 0, 0, W, H, r); ctx.fill();
+}
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+const designs = [
+  {
+    name: 'Centered bars (current-ish)',
+    desc: '5 symmetric bars, center tallest. Closest to what ships now.',
+    draw(ctx, lvl, rounded) {
+      bg(ctx, rounded);
+      const N = 5, bw = 12, gap = 8;
+      const cluster = N * bw + (N - 1) * gap;
+      const x0 = (W - cluster) / 2;
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      for (let i = 0; i < N; i++) {
+        const weight = 1 - Math.abs(i - (N - 1) / 2) / N;
+        const h = Math.max(4, H * 0.8 * lvl * weight);
+        const x = x0 + i * (bw + gap);
+        roundRect(ctx, x, (H - h) / 2, bw, h, 3); ctx.fill();
+      }
+    }
+  },
+  {
+    name: 'Symmetric mirror bars',
+    desc: 'Bars grow from a center line both up and down (classic EQ look).',
+    draw(ctx, lvl, rounded) {
+      bg(ctx, rounded);
+      const N = 9, bw = 10, gap = 6;
+      const cluster = N * bw + (N - 1) * gap;
+      const x0 = (W - cluster) / 2, cy = H / 2;
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      for (let i = 0; i < N; i++) {
+        const weight = 0.35 + 0.65 * (1 - Math.abs(i - (N - 1) / 2) / (N / 2));
+        const jitter = 0.7 + 0.3 * Math.sin(t * 9 + i);
+        const half = Math.max(3, (H * 0.42) * lvl * weight * jitter);
+        const x = x0 + i * (bw + gap);
+        roundRect(ctx, x, cy - half, bw, half * 2, bw / 2); ctx.fill();
+      }
+    }
+  },
+  {
+    name: 'Dot equalizer',
+    desc: 'Columns of dots that light up with level. Soft, playful.',
+    draw(ctx, lvl, rounded) {
+      bg(ctx, rounded);
+      const cols = 7, rows = 5, r = 4, gapX = 18, gapY = 15;
+      const gridW = (cols - 1) * gapX, gridH = (rows - 1) * gapY;
+      const x0 = (W - gridW) / 2, y0 = (H - gridH) / 2;
+      for (let c = 0; c < cols; c++) {
+        const weight = 1 - Math.abs(c - (cols - 1) / 2) / cols;
+        const lit = Math.round(rows * lvl * (0.6 + 0.4 * weight) + 0.3 * Math.sin(t * 8 + c));
+        for (let rr = 0; rr < rows; rr++) {
+          const on = (rows - 1 - rr) < lit;
+          ctx.fillStyle = on ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.14)';
+          ctx.beginPath();
+          ctx.arc(x0 + c * gapX, y0 + rr * gapY, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+  },
+  {
+    name: 'Smooth waveform line',
+    desc: 'A single oscilloscope-style line whose amplitude tracks level.',
+    draw(ctx, lvl, rounded) {
+      bg(ctx, rounded);
+      ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+      ctx.lineWidth = 2.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.beginPath();
+      const amp = H * 0.34 * lvl, cy = H / 2;
+      for (let x = PAD; x <= W - PAD; x += 3) {
+        const p = (x - PAD) / (W - 2 * PAD);
+        const y = cy + Math.sin(p * Math.PI * 4 + t * 6) * amp * Math.sin(p * Math.PI);
+        x === PAD ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  },
+  {
+    name: 'Pulsing orb',
+    desc: 'A glowing circle that breathes with your voice. Minimal, Siri-ish.',
+    draw(ctx, lvl, rounded) {
+      bg(ctx, rounded);
+      const cx = W / 2, cy = H / 2;
+      const base = 12, r = base + H * 0.32 * lvl;
+      const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, r + 10);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.6, 'rgba(150,190,255,0.55)');
+      g.addColorStop(1, 'rgba(150,190,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, r + 10, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.beginPath(); ctx.arc(cx, cy, base + H * 0.18 * lvl, 0, Math.PI * 2); ctx.fill();
+    }
+  },
+  {
+    name: 'Scrolling history bars',
+    desc: 'Bars scroll right to left like a live meter tape. Shows recent history.',
+    state: { hist: [] },
+    draw(ctx, lvl, rounded) {
+      bg(ctx, rounded);
+      this.state.hist.push(lvl);
+      const N = 24; while (this.state.hist.length > N) this.state.hist.shift();
+      const bw = (W - 2 * PAD) / N;
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      for (let i = 0; i < this.state.hist.length; i++) {
+        const v = this.state.hist[i];
+        const h = Math.max(2, H * 0.8 * v);
+        const x = PAD + i * bw;
+        roundRect(ctx, x + 0.5, (H - h) / 2, bw - 1.5, h, 2); ctx.fill();
+      }
+    }
+  },
+  {
+    name: 'Bars + level tint',
+    desc: 'Centered bars that shift white to amber to red as you get louder (clip cue).',
+    draw(ctx, lvl, rounded) {
+      bg(ctx, rounded);
+      const N = 7, bw = 10, gap = 7;
+      const cluster = N * bw + (N - 1) * gap;
+      const x0 = (W - cluster) / 2;
+      let col = 'rgba(255,255,255,0.92)';
+      if (lvl > 0.85) col = 'rgba(255,90,80,0.95)';
+      else if (lvl > 0.6) col = 'rgba(255,200,90,0.95)';
+      ctx.fillStyle = col;
+      for (let i = 0; i < N; i++) {
+        const weight = 0.4 + 0.6 * (1 - Math.abs(i - (N - 1) / 2) / (N / 2));
+        const jitter = 0.75 + 0.25 * Math.sin(t * 10 + i * 1.3);
+        const h = Math.max(3, H * 0.8 * lvl * weight * jitter);
+        const x = x0 + i * (bw + gap);
+        roundRect(ctx, x, (H - h) / 2, bw, h, bw / 2); ctx.fill();
+      }
+    }
+  },
+  {
+    name: 'Pill + REC dot + meter',
+    desc: 'Compact: a pulsing red REC dot, a label, and a short bar meter.',
+    draw(ctx, lvl, rounded) {
+      bg(ctx, rounded);
+      const pulse = 0.6 + 0.4 * Math.abs(Math.sin(t * 4));
+      ctx.fillStyle = 'rgba(255,70,70,' + pulse + ')';
+      ctx.beginPath(); ctx.arc(28, H / 2, 7, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.font = '600 15px -apple-system, system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('REC', 44, H / 2 + 1);
+      const N = 6, bw = 8, gap = 6, right = W - PAD;
+      const cluster = N * bw + (N - 1) * gap, x0 = right - cluster;
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      for (let i = 0; i < N; i++) {
+        const weight = 0.4 + 0.6 * (i + 1) / N;
+        const on = (i / N) < lvl;
+        ctx.globalAlpha = on ? 0.95 : 0.2;
+        const h = Math.max(4, H * 0.6 * weight);
+        roundRect(ctx, x0 + i * (bw + gap), (H - h) / 2, bw, h, 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+  },
+];
+
+const grid = document.getElementById('grid');
+const cards = designs.map((d, i) => {
+  const card = document.createElement('div');
+  card.className = 'card';
+
+  const num = document.createElement('div');
+  num.className = 'num'; num.textContent = '#' + (i + 1);
+
+  const name = document.createElement('div');
+  name.className = 'name'; name.textContent = d.name;
+
+  const stage = document.createElement('div');
+  stage.className = 'stage';
+  const canvas = document.createElement('canvas');
+  canvas.width = 320; canvas.height = 96;
+  canvas.style.width = '320px'; canvas.style.height = '96px';
+  stage.appendChild(canvas);
+
+  const desc = document.createElement('div');
+  desc.className = 'desc'; desc.textContent = d.desc;
+
+  card.append(num, name, stage, desc);
+  grid.appendChild(card);
+  return { d, ctx: canvas.getContext('2d') };
+});
+
+const modeEl = document.getElementById('mode');
+const levelEl = document.getElementById('level');
+const roundedEl = document.getElementById('rounded');
+const readout = document.getElementById('lvlreadout');
+const pauseBtn = document.getElementById('pause');
+levelEl.addEventListener('input', () => { manual = parseFloat(levelEl.value); });
+pauseBtn.addEventListener('click', () => {
+  paused = !paused; pauseBtn.textContent = paused ? 'Play' : 'Pause';
+});
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) t += dt;
+  const mode = modeEl.value;
+  const lvl = levelFor(mode);
+  readout.textContent = lvl.toFixed(2);
+  const rounded = roundedEl.checked;
+  for (const entry of cards) entry.d.draw(entry.ctx, lvl, rounded);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -134,7 +134,7 @@ def test_run_no_paste_flag_sets_copy_only(tmp_path: Path, monkeypatch: pytest.Mo
     cfg = tmp_path / "config.toml"
     cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
 
-    result = runner.invoke(app, ["run", "--no-paste", "--config", str(cfg)])
+    result = runner.invoke(app, ["run", "--no-paste", "--no-overlay", "--config", str(cfg)])
     assert result.exit_code == 0
     assert captured.get("copy_only") is True
 
@@ -166,7 +166,7 @@ def test_run_no_cleanup_flag_force_disables_cleanup(
     cfg = tmp_path / "config.toml"
     cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
 
-    result = runner.invoke(app, ["run", "--no-cleanup", "--config", str(cfg)])
+    result = runner.invoke(app, ["run", "--no-cleanup", "--no-overlay", "--config", str(cfg)])
     assert result.exit_code == 0
     assert captured.get("cleanup_enabled") is False
 
@@ -189,7 +189,7 @@ def test_run_without_no_cleanup_leaves_cleanup_to_config(
     cfg = tmp_path / "config.toml"
     cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
 
-    result = runner.invoke(app, ["run", "--config", str(cfg)])
+    result = runner.invoke(app, ["run", "--no-overlay", "--config", str(cfg)])
     assert result.exit_code == 0
     # No flag → None (config decides).
     assert captured.get("cleanup_enabled") is None
@@ -228,7 +228,7 @@ def test_run_no_overlay_flag_skips_the_host(
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
     monkeypatch.setattr(
-        host_module, "run_with_overlay", lambda controller: host_calls.append("host") or True
+        host_module, "run_with_overlay", lambda controller, **kw: host_calls.append("host") or True
     )
     cfg = tmp_path / "config.toml"
     cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
@@ -257,7 +257,7 @@ def test_run_falls_back_to_blocking_run_when_overlay_declines(
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
     # Overlay declines (non-macOS / unavailable / stub) → fallback path taken.
-    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller: False)
+    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller, **kw: False)
     cfg = tmp_path / "config.toml"
     # Request the overlay explicitly so the host is attempted on any platform
     # (ADR-0004: enabled=True wins over the platform default).
@@ -270,10 +270,16 @@ def test_run_falls_back_to_blocking_run_when_overlay_declines(
     assert ran == ["run"], "controller.run() should be the fallback when the overlay declines"
 
 
-def test_run_falls_back_when_overlay_host_raises(
+def test_run_propagates_when_overlay_host_raises_after_committing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A raising GUI host must never break `run` — it degrades to the blocking loop."""
+    """Once the host commits to the run, a failure PROPAGATES — no fall-back retry.
+
+    Regression: previously a raising host was caught and cli.run() re-ran
+    controller.run(), double-crashing on a backend that fails to load. The host
+    now fails open only for AppKit-setup failures (by returning False); a failure
+    after commit (e.g. controller.start()) must surface once, not fall back.
+    """
     import local_flow.app as app_module
     import local_flow.gui.host as host_module
 
@@ -286,8 +292,8 @@ def test_run_falls_back_when_overlay_host_raises(
         def run(self) -> None:
             ran.append("run")
 
-    def _boom(controller: object) -> bool:
-        raise RuntimeError("host blew up")
+    def _boom(controller: object, **kw: object) -> bool:
+        raise RuntimeError("host blew up after committing")
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
     monkeypatch.setattr(host_module, "run_with_overlay", _boom)
@@ -297,8 +303,9 @@ def test_run_falls_back_when_overlay_host_raises(
     )
 
     result = runner.invoke(app, ["run", "--config", str(cfg)])
-    assert result.exit_code == 0
-    assert ran == ["run"], "a raising overlay host must still reach controller.run()"
+    # The error surfaces (non-zero exit) rather than falling back to run().
+    assert result.exit_code != 0
+    assert ran == [], "a committed-host failure must NOT fall back to controller.run()"
 
 
 def test_run_does_not_call_blocking_run_when_overlay_hosts(
@@ -318,7 +325,7 @@ def test_run_does_not_call_blocking_run_when_overlay_hosts(
             ran.append("run")
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
-    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller: True)
+    monkeypatch.setattr(host_module, "run_with_overlay", lambda controller, **kw: True)
     cfg = tmp_path / "config.toml"
     cfg.write_text(
         '[transcription]\nbackend = "fake"\n[overlay]\nenabled = true\n', encoding="utf-8"

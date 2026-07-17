@@ -624,6 +624,35 @@ class TestStartSeam:
         finally:
             ctrl.shutdown()
 
+    def test_start_bails_cleanly_if_shutdown_raced_during_load(self) -> None:
+        """A Ctrl-C during the slow backend load() must not crash start().
+
+        Regression: the signal handler runs on the main thread and moves the
+        state to STOPPING while load() is in flight; the subsequent
+        STARTING->IDLE transition is then invalid. start() must bail cleanly,
+        not raise, and must not start hotkeys on an already-stopping app.
+        """
+        ctrl, hotkeys, _ = _make_controller()
+
+        # Simulate the race: shutdown lands (state -> STOPPING) *during* load().
+        original_load = ctrl._backend.load
+
+        def _load_then_shutdown() -> None:
+            original_load()
+            ctrl._state_machine.transition(AppState.STOPPING)
+
+        ctrl._backend.load = _load_then_shutdown  # type: ignore[method-assign]
+
+        # Must not raise InvalidTransitionError.
+        ctrl.start()
+
+        # It bailed: state stayed STOPPING and hotkeys were never started.
+        assert ctrl._state_machine.state is AppState.STOPPING
+        assert hotkeys.on_press is not None  # default lambda, never registered a press cb
+        # A press must be a no-op (not IDLE -> RECORDING) since we bailed.
+        hotkeys.on_press()
+        assert ctrl._state_machine.state is AppState.STOPPING
+
 
 class TestNotifierInjection:
     """A notifier can be injected via the constructor (seam for ADR-0003)."""

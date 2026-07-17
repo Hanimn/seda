@@ -110,6 +110,15 @@ class FanOutNotifier:
     def __init__(self, notifiers: Sequence[Notifier]) -> None:
         self._notifiers: list[Notifier] = list(notifiers)
 
+    def add(self, notifier: Notifier) -> None:
+        """Append a notifier after construction.
+
+        Lets the GUI host register its :class:`OverlayNotifier` once the panel
+        is built on the main thread (ADR-0001/#20), without the controller
+        rebuilding its notifier.
+        """
+        self._notifiers.append(notifier)
+
     def notify(self, event: NotificationEvent, **kwargs: Any) -> None:
         for notifier in self._notifiers:
             try:
