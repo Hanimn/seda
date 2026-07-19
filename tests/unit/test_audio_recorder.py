@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from local_flow.audio.recorder import (
+from seda.audio.recorder import (
     RecordedAudio,
     RecorderConfig,
     RecordingTooShortError,
@@ -20,7 +20,7 @@ from local_flow.audio.recorder import (
     _to_mono_float32,
     _trim_silence,
 )
-from local_flow.errors import EmptyAudioError
+from seda.errors import EmptyAudioError
 
 RATE = 16_000
 
@@ -198,7 +198,7 @@ class TestLatestLevel:
         assert rec.latest_level == 0.0
 
     def test_callback_updates_level_to_block_rms(self):
-        from local_flow.audio.recorder import _rms
+        from seda.audio.recorder import _rms
 
         rec = SounddeviceRecorder(RecorderConfig())
         block = _tone(1024, 0.4).reshape(-1, 1)
@@ -235,7 +235,7 @@ class TestLatestLevel:
     def test_raising_rms_never_breaks_recording(self, monkeypatch):
         # If level computation raises, the block is still recorded and the
         # callback does not propagate (fail-open, ADR-0002).
-        import local_flow.audio.recorder as recorder_mod
+        import seda.audio.recorder as recorder_mod
 
         def _boom(_samples):
             raise RuntimeError("rms exploded")

@@ -1,6 +1,6 @@
 # Architecture
 
-Local Flow records audio, transcribes it locally, processes the transcript deterministically, optionally runs local LLM cleanup, then pastes the result at the cursor. Nothing leaves the device unless the user explicitly opts in.
+Seda records audio, transcribes it locally, processes the transcript deterministically, optionally runs local LLM cleanup, then pastes the result at the cursor. Nothing leaves the device unless the user explicitly opts in.
 
 ## State machine
 
@@ -67,7 +67,7 @@ The following data is processed only in-process and is never written to disk unl
 
 The only network traffic the application initiates is:
 
-- Model downloads (`local-flow models download`, on-demand, user-initiated).
+- Model downloads (`seda models download`, on-demand, user-initiated).
 - Cleanup requests to the configured Ollama endpoint (loopback by default; requires `cleanup.enabled = true`).
 
 ## Failure recovery

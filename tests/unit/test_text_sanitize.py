@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.text.sanitize import InvalidTranscriptError, sanitize
+from seda.text.sanitize import InvalidTranscriptError, sanitize
 
 
 class TestNullByteRejection:

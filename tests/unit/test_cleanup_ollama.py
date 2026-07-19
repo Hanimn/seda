@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.cleanup.ollama import OllamaCleanupProvider
-from local_flow.config import CleanupConfig
-from local_flow.errors import CleanupError
+from seda.cleanup.ollama import OllamaCleanupProvider
+from seda.config import CleanupConfig
+from seda.errors import CleanupError
 
 # ---------------------------------------------------------------------------
 # Fake httpx client

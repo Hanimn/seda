@@ -639,59 +639,6 @@ wheels = [
 ]
 
 [[package]]
-name = "local-flow"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "platformdirs" },
-    { name = "pydantic" },
-    { name = "pynput" },
-    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
-    { name = "pyperclip" },
-    { name = "sounddevice" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-cleanup = [
-    { name = "httpx" },
-]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-vad = [
-    { name = "silero-vad" },
-]
-whisper = [
-    { name = "faster-whisper" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "faster-whisper", marker = "extra == 'whisper'", specifier = ">=1.0,<2" },
-    { name = "httpx", marker = "extra == 'cleanup'", specifier = ">=0.27,<1" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10,<2" },
-    { name = "numpy", specifier = ">=1.24,<3" },
-    { name = "platformdirs", specifier = ">=4,<5" },
-    { name = "pydantic", specifier = ">=2.6,<3" },
-    { name = "pynput", specifier = ">=1.7,<2" },
-    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = ">=10.1" },
-    { name = "pyperclip", specifier = ">=1.8,<2" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<9" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5,<7" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6,<1" },
-    { name = "silero-vad", marker = "extra == 'vad'", specifier = ">=5,<6" },
-    { name = "sounddevice", specifier = ">=0.4,<1" },
-    { name = "typer", specifier = ">=0.12,<1" },
-]
-provides-extras = ["whisper", "vad", "cleanup", "dev"]
-
-[[package]]
 name = "markdown-it-py"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1633,6 +1580,59 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c0/b8/e43466b2a6067ce91e669068f6e28d6c719a920f014b070d5c8731725de3/ruff-0.15.21-py3-none-win_amd64.whl", hash = "sha256:d4b8d9a2f0f12b816b50447f6eccb9f4bb01a6b82c86b50fb3b5354b458dc6d3", size = 12038772, upload-time = "2026-07-09T20:01:29.497Z" },
     { url = "https://files.pythonhosted.org/packages/dd/75/e90ab9aeece218a9fc5a5bc3ec97d0ee6bb3c4ff95869463c1de58e29a1c/ruff-0.15.21-py3-none-win_arm64.whl", hash = "sha256:6e83115d4b9377c1cbc13abf0e051f069fab0ef815ea0504a8a008cee24dd0a8", size = 11375265, upload-time = "2026-07-09T20:01:31.772Z" },
 ]
+
+[[package]]
+name = "seda"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "platformdirs" },
+    { name = "pydantic" },
+    { name = "pynput" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
+    { name = "pyperclip" },
+    { name = "sounddevice" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+cleanup = [
+    { name = "httpx" },
+]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+vad = [
+    { name = "silero-vad" },
+]
+whisper = [
+    { name = "faster-whisper" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "faster-whisper", marker = "extra == 'whisper'", specifier = ">=1.0,<2" },
+    { name = "httpx", marker = "extra == 'cleanup'", specifier = ">=0.27,<1" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10,<2" },
+    { name = "numpy", specifier = ">=1.24,<3" },
+    { name = "platformdirs", specifier = ">=4,<5" },
+    { name = "pydantic", specifier = ">=2.6,<3" },
+    { name = "pynput", specifier = ">=1.7,<2" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = ">=10.1" },
+    { name = "pyperclip", specifier = ">=1.8,<2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<9" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5,<7" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6,<1" },
+    { name = "silero-vad", marker = "extra == 'vad'", specifier = ">=5,<6" },
+    { name = "sounddevice", specifier = ">=0.4,<1" },
+    { name = "typer", specifier = ">=0.12,<1" },
+]
+provides-extras = ["whisper", "vad", "cleanup", "dev"]
 
 [[package]]
 name = "setuptools"

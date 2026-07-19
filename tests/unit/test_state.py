@@ -6,8 +6,8 @@ import threading
 
 import pytest
 
-from local_flow.errors import InvalidTransitionError
-from local_flow.state import VALID_TRANSITIONS, AppState, StateMachine
+from seda.errors import InvalidTransitionError
+from seda.state import VALID_TRANSITIONS, AppState, StateMachine
 
 
 class TestAppState:

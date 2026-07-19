@@ -27,7 +27,7 @@ Rationale:
   dependency makes AppKit's presence explicit and version-controlled. `[sourced]`
 - **Overlay is a core, always-on macOS UI surface**, not an opt-in backend like
   `whisper`/`vad`/`cleanup`. An optional extra (Option C) would mean the overlay
-  silently no-ops unless the user remembered `pip install local-flow[overlay]`,
+  silently no-ops unless the user remembered `pip install seda[overlay]`,
   which is worse UX for a first-class feature. A base marker dep installs it
   automatically for every macOS user while staying invisible to non-macOS installs.
   `[inferred]`
@@ -131,7 +131,7 @@ markers in both** regular and optional-dependency groups. `[sourced]`
 [project.optional-dependencies]
 overlay = ["pyobjc-framework-Cocoa>=10.1; sys_platform == \"darwin\""]
 ```
-Installed only with `pip install local-flow[overlay]`. Off by default everywhere.
+Installed only with `pip install seda[overlay]`. Off by default everywhere.
 Downside: the overlay (a core UI surface) silently no-ops for users who don't opt in,
 even on macOS. Best only if the overlay is genuinely optional. `[inferred]`
 
@@ -243,4 +243,4 @@ tool lean — one marker-gated line, no new extra to document or teach users. `[
   optional-dependencies): <https://hatch.pypa.io/latest/config/dependency/>
 - Repo files grounding the snippets:
   `/Users/I748258/Projects/seda/pyproject.toml`,
-  `/Users/I748258/Projects/seda/src/local_flow/input/hotkeys.py`
+  `/Users/I748258/Projects/seda/src/seda/input/hotkeys.py`

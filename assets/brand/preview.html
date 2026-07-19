@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Seda Brand Assets</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --fg: #e6edf3;
+      --muted: #7d8590;
+      --border: #30363d;
+      --accent: #2dd4bf;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.6;
+      padding: 48px;
+    }
+
+    h1 {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 32px;
+    }
+
+    h2 {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+    }
+
+    h2:first-of-type {
+      border-top: none;
+      padding-top: 0;
+    }
+
+    .section {
+      margin-bottom: 48px;
+    }
+
+    .asset-row {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+
+    .asset-label {
+      font-size: 11px;
+      color: var(--muted);
+      min-width: 140px;
+    }
+
+    .banner-preview {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .banner-preview img {
+      width: 100%;
+      max-width: 640px;
+      height: auto;
+      display: block;
+    }
+
+    .logo-preview {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 24px;
+      display: inline-block;
+    }
+
+    .logo-preview.light {
+      background: #ffffff;
+    }
+
+    .badges {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .color-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .color-swatch {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .swatch {
+      width: 40px;
+      height: 40px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    .color-info {
+      font-size: 12px;
+    }
+
+    .color-name {
+      color: var(--fg);
+      font-weight: 500;
+    }
+
+    .color-hex {
+      color: var(--muted);
+    }
+
+    .readme-example {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 32px;
+      margin-top: 16px;
+    }
+
+    .readme-example pre {
+      font-size: 13px;
+      color: var(--muted);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .readme-example code {
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <h1>Seda Brand Assets</h1>
+
+  <div class="section">
+    <h2>README Banner (1280×640)</h2>
+    <div class="banner-preview">
+      <img src="assets/brand/readme-banner.svg" alt="Seda README banner">
+    </div>
+    <div class="asset-label">assets/brand/readme-banner.svg</div>
+  </div>
+
+  <div class="section">
+    <h2>Logo Variants</h2>
+    <div class="asset-row">
+      <div class="asset-label">Dark background</div>
+      <div class="logo-preview">
+        <img src="assets/brand/logo.svg" alt="Seda logo" width="200">
+      </div>
+    </div>
+    <div class="asset-row">
+      <div class="asset-label">Light background</div>
+      <div class="logo-preview light">
+        <img src="assets/brand/logo-light.svg" alt="Seda logo light" width="200">
+      </div>
+    </div>
+    <div class="asset-row">
+      <div class="asset-label">Icon only (favicon)</div>
+      <div class="logo-preview">
+        <img src="assets/brand/icon.svg" alt="Seda icon" width="32">
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Status Badges</h2>
+    <div class="badges">
+      <img src="assets/brand/badge-version.svg" alt="version badge">
+      <img src="assets/brand/badge-license.svg" alt="license badge">
+      <img src="assets/brand/badge-python.svg" alt="python badge">
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Brand Palette</h2>
+    <div class="color-grid">
+      <div class="color-swatch">
+        <div class="swatch" style="background: #0d1117;"></div>
+        <div class="color-info">
+          <div class="color-name">Background</div>
+          <div class="color-hex">#0d1117</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch" style="background: #161b22;"></div>
+        <div class="color-info">
+          <div class="color-name">Surface</div>
+          <div class="color-hex">#161b22</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch" style="background: #e6edf3;"></div>
+        <div class="color-info">
+          <div class="color-name">Foreground</div>
+          <div class="color-hex">#e6edf3</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch" style="background: #7d8590;"></div>
+        <div class="color-info">
+          <div class="color-name">Muted</div>
+          <div class="color-hex">#7d8590</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch" style="background: #30363d;"></div>
+        <div class="color-info">
+          <div class="color-name">Border</div>
+          <div class="color-hex">#30363d</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch" style="background: #2dd4bf;"></div>
+        <div class="color-info">
+          <div class="color-name">Accent</div>
+          <div class="color-hex">#2dd4bf</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>README.md Usage</h2>
+    <div class="readme-example">
+      <pre><code>&lt;p align="center"&gt;
+  &lt;img src="assets/brand/readme-banner.svg" alt="Seda" width="100%"&gt;
+&lt;/p&gt;
+
+&lt;p align="center"&gt;
+  &lt;img src="assets/brand/badge-version.svg" alt="version"&gt;
+  &lt;img src="assets/brand/badge-license.svg" alt="license"&gt;
+  &lt;img src="assets/brand/badge-python.svg" alt="python"&gt;
+&lt;/p&gt;</code></pre>
+    </div>
+  </div>
+
+</body>
+</html>

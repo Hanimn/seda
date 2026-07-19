@@ -1,6 +1,6 @@
 # Overlay manual-test config (epic #15 / ADR-0005 §39 checklist).
 #
-#   uv run local-flow run --config dev/overlay-debug.toml
+#   uv run seda run --config dev/overlay-debug.toml
 #
 # Uses the fake transcription backend so the app is READY instantly (no Whisper
 # model download/load), letting you exercise the OVERLAY flow in isolation:

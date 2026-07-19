@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.cleanup.validation import (
+from seda.cleanup.validation import (
     ValidationReason,
     validate_cleanup,
     validate_placeholders,
 )
-from local_flow.text.technical_tokens import protect
+from seda.text.technical_tokens import protect
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -30,9 +30,9 @@ def test_real_faster_whisper_roundtrip(tmp_path) -> None:  # type: ignore[no-unt
     import struct
     import wave
 
-    from local_flow.audio.loading import load_wav
-    from local_flow.config import load_config_from_dict
-    from local_flow.transcription.factory import create_backend
+    from seda.audio.loading import load_wav
+    from seda.config import load_config_from_dict
+    from seda.transcription.factory import create_backend
 
     wav = tmp_path / "tone.wav"
     with wave.open(str(wav), "wb") as w:

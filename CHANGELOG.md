@@ -1,8 +1,26 @@
 # Changelog
 
-All notable changes to Local Flow are documented here.
+All notable changes to Seda are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [Unreleased]
+
+### Changed
+
+- **Renamed the project from "Local Flow" to Seda** (صدا — Persian for "voice").
+  This is a breaking change to align the code with the repository name:
+  - PyPI/project name → `seda`.
+  - CLI command → `seda` (was `local-flow`).
+  - Python import path → `seda` (was `local_flow`); base exception
+    `LocalFlowError` → `SedaError`.
+  - Config/cache directory → `<config>/seda` (was `<config>/local-flow`).
+- Added a one-time startup notice: if configuration still lives under the old
+  `local-flow` directory and no `seda` directory exists yet, `seda run` points
+  you to it and how to move it (no automatic copy).
+- Added brand assets under `assets/brand/` and a README banner + status badges.
 
 ---
 
@@ -15,19 +33,19 @@ macOS via the §39 procedure.
 
 **Phase 0 — Project skeleton**
 - Project configuration, logging, diagnostics, and CLI skeleton.
-- `local-flow config init/validate/show-effective` commands.
-- `local-flow doctor` with `--json` output.
-- `local-flow version` and `local-flow doctor` commands.
+- `seda config init/validate/show-effective` commands.
+- `seda doctor` with `--json` output.
+- `seda version` and `seda doctor` commands.
 
 **Phase 1 — File transcription**
-- `local-flow transcribe FILE` for PCM WAV transcription.
+- `seda transcribe FILE` for PCM WAV transcription.
 - `faster-whisper` backend with auto CUDA/CPU device selection.
-- `local-flow models download/list-local/recommend` commands.
+- `seda models download/list-local/recommend` commands.
 
 **Phase 2 — Microphone recording**
 - Push-to-talk microphone recording via `sounddevice`.
 - Configurable VAD (energy-based), silence trimming, leading/trailing padding.
-- `local-flow devices` and `local-flow test-mic` commands.
+- `seda devices` and `seda test-mic` commands.
 - `SounddeviceRecorder` with overflow detection.
 
 **Phase 3 — Hotkeys and controller**
@@ -58,7 +76,7 @@ macOS via the §39 procedure.
 - `--no-cleanup` CLI flag; loopback-only endpoint by default.
 
 **Phase 7 — Diagnostics and hardening**
-- Full `local-flow doctor` checklist: Python version, OS, config, mic enumeration, clipboard, hotkeys, transcription backend, CUDA, Ollama reachability, Wayland/X11, writable locations.
+- Full `seda doctor` checklist: Python version, OS, config, mic enumeration, clipboard, hotkeys, transcription backend, CUDA, Ollama reachability, Wayland/X11, writable locations.
 - Application-specific paste overrides (`[[paste.application_overrides]]`).
 - Per-cycle DEBUG-level performance metrics (audio/transcription/pipeline/cleanup/paste timing).
 - Pre-existing ANSI color bug fixed in `--help` output assertions.

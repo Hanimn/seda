@@ -1,7 +1,7 @@
-# Local Flow — example configuration
+# Seda — example configuration
 #
-# Copy this file to your platform's config location (see `local-flow config
-# path`) or pass it with `local-flow run --config /path/to/config.toml`.
+# Copy this file to your platform's config location (see `seda config
+# path`) or pass it with `seda run --config /path/to/config.toml`.
 # All values below are the built-in defaults; edit only what you need.
 #
 # Privacy note: the defaults are deliberately conservative. Cleanup is off,

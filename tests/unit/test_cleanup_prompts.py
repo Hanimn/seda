@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.cleanup.prompts import build_system_prompt
+from seda.cleanup.prompts import build_system_prompt
 
 
 class TestSystemPrompt:

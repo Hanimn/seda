@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from local_flow.config import HotkeysConfig
-from local_flow.input.hotkeys import HotkeyProvider, PynputHotkeyProvider
+from seda.config import HotkeysConfig
+from seda.input.hotkeys import HotkeyProvider, PynputHotkeyProvider
 
 
 def _make_pynput_mock() -> tuple[types.ModuleType, MagicMock, MagicMock]:
@@ -220,7 +220,7 @@ class TestKeySuppressionDecision:
     """Which key events belong to the chord and get gated (issues #11, #12)."""
 
     def test_chord_key_names_expands_modifier_aliases(self) -> None:
-        from local_flow.input.hotkeys import _chord_key_names
+        from seda.input.hotkeys import _chord_key_names
 
         names = _chord_key_names("<ctrl>+<shift>+space")
         assert "ctrl" in names and "ctrl_l" in names and "ctrl_r" in names
@@ -228,7 +228,7 @@ class TestKeySuppressionDecision:
         assert "space" in names
 
     def test_chord_modifier_names_excludes_trigger(self) -> None:
-        from local_flow.input.hotkeys import _chord_modifier_names
+        from seda.input.hotkeys import _chord_modifier_names
 
         mods = _chord_modifier_names("<ctrl>+<shift>+space")
         assert "ctrl_l" in mods and "shift_r" in mods
@@ -239,7 +239,7 @@ class TestChordSuppressor:
     """Only suppress chord/cancel keys while the chord is engaged (issues #12, #13)."""
 
     def _make(self) -> object:
-        from local_flow.input.hotkeys import (
+        from seda.input.hotkeys import (
             _chord_key_names,
             _chord_modifier_names,
             _ChordSuppressor,
@@ -291,9 +291,9 @@ class TestDarwinIntercept:
     def _patch_native(
         self, monkeypatch: pytest.MonkeyPatch, *, identity: object, modifiers_held: bool
     ) -> None:
-        monkeypatch.setattr("local_flow.input.hotkeys._darwin_event_identity", lambda e: identity)
+        monkeypatch.setattr("seda.input.hotkeys._darwin_event_identity", lambda e: identity)
         monkeypatch.setattr(
-            "local_flow.input.hotkeys._darwin_chord_modifiers_held",
+            "seda.input.hotkeys._darwin_chord_modifiers_held",
             lambda e, m: modifiers_held,
         )
 
@@ -329,7 +329,7 @@ class TestDarwinIntercept:
         def _boom(_event: object) -> str:
             raise RuntimeError("Quartz unavailable")
 
-        monkeypatch.setattr("local_flow.input.hotkeys._darwin_event_identity", _boom)
+        monkeypatch.setattr("seda.input.hotkeys._darwin_event_identity", _boom)
         sentinel = object()
         # Fail open: never swallow input we could not identify.
         assert intercept("keydown", sentinel) is sentinel

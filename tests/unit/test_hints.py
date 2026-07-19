@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from local_flow.transcription.hints import build_initial_prompt
+from seda.transcription.hints import build_initial_prompt
 
 
 def test_empty_vocabulary_yields_empty_prompt() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.text.fillers import remove_fillers
+from seda.text.fillers import remove_fillers
 
 # ---------------------------------------------------------------------------
 # Mode-based enablement

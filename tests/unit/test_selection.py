@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from local_flow.transcription.selection import (
+from seda.transcription.selection import (
     compute_type_fallbacks,
     resolve_compute_type,
     resolve_device,

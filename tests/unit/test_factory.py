@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.config import load_config_from_dict
-from local_flow.errors import ConfigurationError, ModelUnavailableError
-from local_flow.transcription.factory import create_backend
-from local_flow.transcription.fake import FakeBackend
-from local_flow.transcription.faster_whisper_backend import FasterWhisperBackend
+from seda.config import load_config_from_dict
+from seda.errors import ConfigurationError, ModelUnavailableError
+from seda.transcription.factory import create_backend
+from seda.transcription.fake import FakeBackend
+from seda.transcription.faster_whisper_backend import FasterWhisperBackend
 
 
 def test_factory_returns_fake_backend() -> None:

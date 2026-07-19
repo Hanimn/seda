@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from local_flow.text.technical_tokens import (
+from seda.text.technical_tokens import (
     ProtectionError,
     protect,
     restore,

@@ -1,6 +1,6 @@
 # Privacy
 
-Local Flow is designed to keep dictated content on your machine. This document describes what the application does with your data, what can leave your device, and what the defaults are.
+Seda is designed to keep dictated content on your machine. This document describes what the application does with your data, what can leave your device, and what the defaults are.
 
 ## What stays local
 
@@ -13,18 +13,18 @@ Under the default configuration, the following data never leaves your device:
 
 ## When network access can occur
 
-Local Flow initiates network connections in these cases only:
+Seda initiates network connections in these cases only:
 
-1. **Model downloads** – when you run `local-flow models download <model>`. This is an explicit, user-initiated command and downloads from Hugging Face. It can be prevented with `--offline`.
+1. **Model downloads** – when you run `seda models download <model>`. This is an explicit, user-initiated command and downloads from Hugging Face. It can be prevented with `--offline`.
 2. **Cleanup requests** – when `cleanup.enabled = true`, transcripts are sent to the configured Ollama endpoint for prose cleanup. The endpoint defaults to `http://127.0.0.1:11434` (loopback only). A non-loopback endpoint requires `cleanup.allow_remote_endpoint = true`.
 
 No other network connections are made. There is no telemetry, no update check, and no analytics.
 
 ## Model download behaviour
 
-- Models are downloaded on demand when `local-flow models download` is run, or on first use when `--offline` is not set and the model is absent.
-- Models are stored in the platform user-cache directory (`~/Library/Caches/local-flow` on macOS, `~/.cache/local-flow` on Linux).
-- Pass `--offline` to `local-flow run` or `local-flow transcribe` to refuse downloads and require a locally cached model.
+- Models are downloaded on demand when `seda models download` is run, or on first use when `--offline` is not set and the model is absent.
+- Models are stored in the platform user-cache directory (`~/Library/Caches/seda` on macOS, `~/.cache/seda` on Linux).
+- Pass `--offline` to `seda run` or `seda transcribe` to refuse downloads and require a locally cached model.
 
 ## Cleanup endpoint behaviour
 
@@ -34,7 +34,7 @@ No other network connections are made. There is no telemetry, no update check, a
 - The endpoint is loopback-only by default. Non-loopback endpoints require explicit opt-in and log a one-time privacy warning.
 - Request and response bodies are **never logged**. Only aggregate metrics (character counts, edit ratio, validation result) are recorded.
 
-> **Qualified claim**: Local Flow does not send data to external services under the default configuration. However, if you configure a non-loopback cleanup endpoint or download models from Hugging Face, data does leave your device for those specific operations. The defaults prevent this.
+> **Qualified claim**: Seda does not send data to external services under the default configuration. However, if you configure a non-loopback cleanup endpoint or download models from Hugging Face, data does leave your device for those specific operations. The defaults prevent this.
 
 ## Logging defaults
 

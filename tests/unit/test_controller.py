@@ -14,10 +14,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from local_flow.app import AppController
-from local_flow.config import Config
-from local_flow.state import AppState
-from local_flow.transcription.fake import FakeBackend
+from seda.app import AppController
+from seda.config import Config
+from seda.state import AppState
+from seda.transcription.fake import FakeBackend
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -82,7 +82,7 @@ class _RecordingInserter:
         self.copy_only_calls: list[bool] = []
 
     def insert(self, text: str, *, copy_only: bool = False) -> object:
-        from local_flow.input.paste import InsertionResult
+        from seda.input.paste import InsertionResult
 
         self.inserted.append(text)
         self.copy_only_calls.append(copy_only)
@@ -96,7 +96,7 @@ class _FakeRecorder:
         pass
 
     def stop(self) -> object:
-        from local_flow.audio.recorder import RecordedAudio
+        from seda.audio.recorder import RecordedAudio
 
         return RecordedAudio(
             samples=np.zeros(16000, dtype=np.float32),
@@ -207,7 +207,7 @@ class TestBusyBehavior:
     def test_press_while_transcribing_emits_busy_and_stays_transcribing(self) -> None:
         import io
 
-        from local_flow.notifications import ConsoleNotifier
+        from seda.notifications import ConsoleNotifier
 
         buf = io.StringIO()
         notifier = ConsoleNotifier(stream=buf)
@@ -326,7 +326,7 @@ class TestTextInsertion:
     def test_paste_failure_emits_error_notification(self) -> None:
         import io
 
-        from local_flow.notifications import ConsoleNotifier
+        from seda.notifications import ConsoleNotifier
 
         buf = io.StringIO()
         be = FakeBackend(text="hello world")
@@ -335,7 +335,7 @@ class TestTextInsertion:
 
         class FailingInserter:
             def insert(self, text: str, *, copy_only: bool = False) -> object:
-                from local_flow.input.paste import InsertionResult
+                from seda.input.paste import InsertionResult
 
                 return InsertionResult(
                     copied=True, pasted=False, restored=False, error="paste failed"
@@ -359,7 +359,7 @@ class TestTextInsertion:
 
 def _cleanup_config(*, mode: str = "standard", enabled: bool = True) -> Config:
     """A Config with cleanup enabled (and app.mode set)."""
-    from local_flow.config import load_config_from_dict
+    from seda.config import load_config_from_dict
 
     return load_config_from_dict({"app": {"mode": mode}, "cleanup": {"enabled": enabled}})
 
@@ -381,7 +381,7 @@ class TestCleanupPath:
     """Cleanup runs only when enabled + non-literal; always fail-open (Phase 6)."""
 
     def test_cleaned_text_pasted_and_cleaning_state_entered(self) -> None:
-        from local_flow.cleanup.fake import FakeCleanupProvider
+        from seda.cleanup.fake import FakeCleanupProvider
 
         be = FakeBackend(text="um so fix the bug")
         provider = FakeCleanupProvider(output="fix the bug")
@@ -407,7 +407,7 @@ class TestCleanupPath:
             t.join(timeout=3.0)
 
     def test_validation_failure_falls_back_to_deterministic(self) -> None:
-        from local_flow.cleanup.fake import FakeCleanupProvider
+        from seda.cleanup.fake import FakeCleanupProvider
 
         be = FakeBackend(text="fix the bug")
         # An assistant preface is rejected by validation → fall back.
@@ -432,7 +432,7 @@ class TestCleanupPath:
             t.join(timeout=3.0)
 
     def test_apparent_answer_falls_back_to_deterministic(self) -> None:
-        from local_flow.cleanup.fake import FakeCleanupProvider
+        from seda.cleanup.fake import FakeCleanupProvider
 
         be = FakeBackend(text="how do I fix the slow query")
         # The model answered instead of cleaning → rejected → fall back.
@@ -456,8 +456,8 @@ class TestCleanupPath:
             t.join(timeout=3.0)
 
     def test_provider_error_falls_back_transcription_not_lost(self) -> None:
-        from local_flow.cleanup.fake import FakeCleanupProvider
-        from local_flow.errors import CleanupError
+        from seda.cleanup.fake import FakeCleanupProvider
+        from seda.errors import CleanupError
 
         be = FakeBackend(text="fix the bug")
         provider = FakeCleanupProvider(raise_error=CleanupError("no server"))
@@ -481,7 +481,7 @@ class TestCleanupPath:
             t.join(timeout=3.0)
 
     def test_literal_mode_bypasses_cleanup(self) -> None:
-        from local_flow.cleanup.fake import FakeCleanupProvider
+        from seda.cleanup.fake import FakeCleanupProvider
 
         # Base mode literal → cleanup provider must never be called.
         be = FakeBackend(text="fix the bug")
@@ -510,7 +510,7 @@ class TestCleanupPath:
             t.join(timeout=3.0)
 
     def test_disabled_cleanup_skips_provider(self) -> None:
-        from local_flow.cleanup.fake import FakeCleanupProvider
+        from seda.cleanup.fake import FakeCleanupProvider
 
         be = FakeBackend(text="fix the bug")
         provider = FakeCleanupProvider(output="SHOULD NOT APPEAR")
@@ -613,7 +613,7 @@ class TestStartSeam:
     def test_start_emits_ready(self) -> None:
         import io
 
-        from local_flow.notifications import ConsoleNotifier, NotificationEvent
+        from seda.notifications import ConsoleNotifier, NotificationEvent
 
         buf = io.StringIO()
         ctrl, _, _ = _make_controller()
@@ -675,14 +675,14 @@ class TestNotifierInjection:
         ctrl._recorder = _FakeRecorder()
         ctrl.start()
         try:
-            from local_flow.notifications import NotificationEvent
+            from seda.notifications import NotificationEvent
 
             assert NotificationEvent.READY in recorded
         finally:
             ctrl.shutdown()
 
     def test_default_notifier_is_console(self) -> None:
-        from local_flow.notifications import ConsoleNotifier
+        from seda.notifications import ConsoleNotifier
 
         ctrl, _, _ = _make_controller()
         assert isinstance(ctrl._notifier, ConsoleNotifier)

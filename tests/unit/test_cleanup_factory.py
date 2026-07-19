@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.cleanup.base import NoopCleanupProvider
-from local_flow.cleanup.factory import create_cleanup_provider
-from local_flow.cleanup.ollama import OllamaCleanupProvider
-from local_flow.config import load_config_from_dict
-from local_flow.errors import ConfigurationError
+from seda.cleanup.base import NoopCleanupProvider
+from seda.cleanup.factory import create_cleanup_provider
+from seda.cleanup.ollama import OllamaCleanupProvider
+from seda.config import load_config_from_dict
+from seda.errors import ConfigurationError
 
 
 def _cfg(**cleanup: object):  # type: ignore[no-untyped-def]
