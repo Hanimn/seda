@@ -34,8 +34,8 @@ on-device checklist for what automation can't judge.
 
 Every AppKit touch sits behind a small named module-level function — `_make_panel`,
 `_show_panel`, `_hide_panel`, `_dispatch_main`, etc. — exactly as
-`local_flow.input.hotkeys._darwin_event_identity` does. Unit tests
-`monkeypatch.setattr("local_flow.<overlay module>._show_panel", fake)`; **CI never imports
+`seda.input.hotkeys._darwin_event_identity` does. Unit tests
+`monkeypatch.setattr("seda.<overlay module>._show_panel", fake)`; **CI never imports
 AppKit.** This is the load-bearing testability decision — it makes tiers 2/3 the only place
 real AppKit runs.
 
@@ -88,7 +88,7 @@ style), run on a Mac before the overlay ships:
 - The **#17 `[uncertain]` items** live here: window level actually covers full-screen
   (`NSStatusWindowLevel` + `fullScreenAuxiliary` vs `NSScreenSaverWindowLevel`);
   `CADisplayLink` availability vs `NSTimer` baseline; `Accessory` policy shows **no Dock-icon
-  flash** under a plain `python -m local_flow` launch.
+  flash** under a plain `python -m seda` launch.
 
 ## Consequences
 

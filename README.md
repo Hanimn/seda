@@ -1,4 +1,14 @@
-# Local Flow
+<p align="center">
+  <img src="assets/brand/readme-banner.svg" alt="Seda" width="100%">
+</p>
+
+<p align="center">
+  <img src="assets/brand/badge-version.svg" alt="version 0.1.0">
+  <img src="assets/brand/badge-license.svg" alt="license MIT">
+  <img src="assets/brand/badge-python.svg" alt="python 3.11+">
+</p>
+
+# Seda
 
 Local-first, system-wide voice dictation — optimized for dictating prompts into
 Claude Code and other terminal applications. Hold a global push-to-talk hotkey,
@@ -14,7 +24,7 @@ speak, release, and get **editable** text at your cursor.
 
 ## Safety and privacy
 
-Local Flow is built to be safe around terminals and coding agents:
+Seda is built to be safe around terminals and coding agents:
 
 - **It never presses Enter.** Automatic submission is not implemented; pasted
   text always stays editable before you submit it.
@@ -32,8 +42,8 @@ Local Flow is built to be safe around terminals and coding agents:
 
 ```bash
 uv sync --extra dev
-uv run local-flow doctor
-uv run local-flow config init
+uv run seda doctor
+uv run seda config init
 ```
 
 With `pip`:
@@ -41,14 +51,14 @@ With `pip`:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-local-flow doctor
+seda doctor
 ```
 
 The speech backend and optional cleanup are separate extras:
 
 ```bash
 uv sync --extra whisper --extra dev
-uv run local-flow models download small.en
+uv run seda models download small.en
 ```
 
 ## CLI
@@ -56,38 +66,38 @@ uv run local-flow models download small.en
 Non-hardware commands:
 
 ```bash
-local-flow version              # print the version
-local-flow config path          # show the default config file path
-local-flow config init          # write a default config file
-local-flow config validate      # validate a config file (readable errors)
-local-flow config show-effective  # print the effective, privacy-safe config
-local-flow doctor               # environment + config diagnostics
-local-flow doctor --json        # machine-readable diagnostics
+seda version              # print the version
+seda config path          # show the default config file path
+seda config init          # write a default config file
+seda config validate      # validate a config file (readable errors)
+seda config show-effective  # print the effective, privacy-safe config
+seda doctor               # environment + config diagnostics
+seda doctor --json        # machine-readable diagnostics
 ```
 
 File transcription — needs the `whisper` extra and a local model:
 
 ```bash
-local-flow models recommend         # list recommended models
-local-flow models download small.en # fetch a model into the local cache
-local-flow models list-local        # list known model identifiers
-local-flow transcribe recording.wav --stdout   # transcribe a PCM WAV file
-local-flow transcribe recording.wav --copy      # copy the transcript to the clipboard
-local-flow transcribe recording.wav --offline   # require a local model; never download
+seda models recommend         # list recommended models
+seda models download small.en # fetch a model into the local cache
+seda models list-local        # list known model identifiers
+seda transcribe recording.wav --stdout   # transcribe a PCM WAV file
+seda transcribe recording.wav --copy      # copy the transcript to the clipboard
+seda transcribe recording.wav --offline   # require a local model; never download
 ```
 
 Push-to-talk dictation — hold the hotkey, speak, release, and the
 transcript is pasted at your cursor:
 
 ```bash
-local-flow run                  # start the push-to-talk loop
-local-flow run --no-paste       # copy the transcript instead of pasting it
-local-flow run --no-cleanup     # disable optional LLM cleanup for this run
-local-flow devices              # list microphone input devices
-local-flow test-mic             # record a short sample and report levels
+seda run                  # start the push-to-talk loop
+seda run --no-paste       # copy the transcript instead of pasting it
+seda run --no-cleanup     # disable optional LLM cleanup for this run
+seda devices              # list microphone input devices
+seda test-mic             # record a short sample and report levels
 ```
 
-Local Flow never presses Enter: pasted text always stays editable. If a paste
+Seda never presses Enter: pasted text always stays editable. If a paste
 fails, the transcript is left on the clipboard and you are notified.
 
 ### Exit codes
@@ -109,11 +119,11 @@ fails, the transcript is left on the clipboard and you are notified.
 Configuration is TOML. See [`config.example.toml`](config.example.toml) for a
 fully-commented starting point. Default location:
 
-- macOS: `~/Library/Application Support/local-flow/config.toml`
-- Linux: `~/.config/local-flow/config.toml`
-- Windows: `%APPDATA%\local-flow\config.toml`
+- macOS: `~/Library/Application Support/seda/config.toml`
+- Linux: `~/.config/seda/config.toml`
+- Windows: `%APPDATA%\seda\config.toml`
 
-Override with `local-flow run --config /path/to/config.toml`.
+Override with `seda run --config /path/to/config.toml`.
 
 ## Documentation
 

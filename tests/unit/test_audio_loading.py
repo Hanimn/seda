@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from local_flow.audio.loading import load_wav
-from local_flow.errors import AudioError, EmptyAudioError
+from seda.audio.loading import load_wav
+from seda.errors import AudioError, EmptyAudioError
 
 WavFactory = Callable[..., Path]
 

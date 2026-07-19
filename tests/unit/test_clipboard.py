@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.input.clipboard import ClipboardProvider, FakeClipboard
-from local_flow.input.paste import (
+from seda.input.clipboard import ClipboardProvider, FakeClipboard
+from seda.input.paste import (
     InsertionResult,
     PasteError,
     PynputPasteBackend,
@@ -356,28 +356,28 @@ class TestPynputPasteBackendParsing:
 
 class TestSelectShortcut:
     def test_macos_uses_cmd_v(self) -> None:
-        from local_flow.config import PasteConfig
+        from seda.config import PasteConfig
 
         assert select_shortcut(PasteConfig(), platform="darwin") == "cmd+v"
 
     def test_windows_uses_ctrl_v(self) -> None:
-        from local_flow.config import PasteConfig
+        from seda.config import PasteConfig
 
         assert select_shortcut(PasteConfig(), platform="win32") == "ctrl+v"
 
     def test_linux_gui_uses_ctrl_v(self) -> None:
-        from local_flow.config import PasteConfig
+        from seda.config import PasteConfig
 
         assert select_shortcut(PasteConfig(), platform="linux") == "ctrl+v"
 
     def test_custom_shortcut_respected(self) -> None:
-        from local_flow.config import PasteConfig
+        from seda.config import PasteConfig
 
         cfg = PasteConfig(shortcut_macos="cmd+shift+v")
         assert select_shortcut(cfg, platform="darwin") == "cmd+shift+v"
 
     def test_application_override_wins_over_platform_default(self) -> None:
-        from local_flow.config import ApplicationOverride, PasteConfig
+        from seda.config import ApplicationOverride, PasteConfig
 
         cfg = PasteConfig(
             application_overrides=[
@@ -391,7 +391,7 @@ class TestSelectShortcut:
         )
 
     def test_no_match_falls_back_to_platform(self) -> None:
-        from local_flow.config import ApplicationOverride, PasteConfig
+        from seda.config import ApplicationOverride, PasteConfig
 
         cfg = PasteConfig(
             application_overrides=[
@@ -402,6 +402,6 @@ class TestSelectShortcut:
         assert select_shortcut(cfg, platform="darwin", active_app="Code") == "cmd+v"
 
     def test_unknown_active_app_falls_back_to_platform(self) -> None:
-        from local_flow.config import PasteConfig
+        from seda.config import PasteConfig
 
         assert select_shortcut(PasteConfig(), platform="darwin", active_app=None) == "cmd+v"

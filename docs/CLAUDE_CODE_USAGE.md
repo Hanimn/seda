@@ -1,25 +1,25 @@
-# Using Local Flow with Claude Code
+# Using Seda with Claude Code
 
-Local Flow is optimized for dictating prompts into Claude Code and similar terminal-based AI assistants. This guide covers setup, prompt styles, and safe usage patterns.
+Seda is optimized for dictating prompts into Claude Code and similar terminal-based AI assistants. This guide covers setup, prompt styles, and safe usage patterns.
 
 ## Setup
 
-1. Install and configure Local Flow (see README).
+1. Install and configure Seda (see README).
 2. Start Claude Code in your terminal.
 3. Click inside the Claude Code input to focus it.
 4. Start the dictation loop in a separate terminal:
    ```bash
-   local-flow run
+   seda run
    ```
 5. Hold the push-to-talk hotkey, dictate your prompt, release.
 
-The transcript appears at the cursor, **editable before you submit**. Local Flow never presses Enter. Review and submit when ready.
+The transcript appears at the cursor, **editable before you submit**. Seda never presses Enter. Review and submit when ready.
 
 ## Prompt styles
 
 ### Normal prose prompt
 
-Dictate naturally — Local Flow cleans up punctuation and removes filler words in standard mode.
+Dictate naturally — Seda cleans up punctuation and removes filler words in standard mode.
 
 **Dictation:**
 > "Review the authentication middleware and explain why refresh tokens are rejected. Do not modify files yet."
@@ -69,14 +69,14 @@ Set the mode per-dictation by speaking it at the start: `"Literal mode ..."` or 
 
 Because Claude Code can execute commands, keep these behaviours in mind:
 
-- **Local Flow never presses Enter.** Dictated text appears at the cursor, editable. You control submission.
+- **Seda never presses Enter.** Dictated text appears at the cursor, editable. You control submission.
 - **Use literal mode for file paths.** Standard and polished modes may alter whitespace or punctuation in technical content.
 - **Review before submitting.** Multi-step instructions with `new line` produce literal newlines — Claude Code interprets these as structured prompts, not multiple commands.
 - **Cancel a dictation** by speaking `"scratch that"` or `"cancel dictation"` at the start of your utterance.
 
 ## Multiline input
 
-Claude Code's terminal handles multiline paste as a single input block (not separate commands). Local Flow sets `paste.multiline_policy = "preserve"` by default, which keeps newlines intact. If you experience unexpected execution, switch to `"flatten"`:
+Claude Code's terminal handles multiline paste as a single input block (not separate commands). Seda sets `paste.multiline_policy = "preserve"` by default, which keeps newlines intact. If you experience unexpected execution, switch to `"flatten"`:
 
 ```toml
 [paste]

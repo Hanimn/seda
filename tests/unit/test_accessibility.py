@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from local_flow.input.accessibility import ACCESSIBILITY_HELP, accessibility_trusted
+from seda.input.accessibility import ACCESSIBILITY_HELP, accessibility_trusted
 
 
 def _fake_hiservices(monkeypatch: pytest.MonkeyPatch, *, trusted: bool | None) -> None:

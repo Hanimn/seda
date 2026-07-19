@@ -241,7 +241,7 @@ Four independent, documented mechanisms combine so the panel never steals key/ma
 The repo already produces the input: `audio/recorder.py` computes `peak_level` and
 `_rms(...)` — one float per audio block (`AudioBuffer.peak_level`, `_rms` returning a
 float32). So the HUD just needs to read "the latest level float" and redraw a few bars.
-`[sourced — repo: src/local_flow/audio/recorder.py]`
+`[sourced — repo: src/seda/audio/recorder.py]`
 
 **The hard rule: all AppKit UI work must happen on the main thread.** Apple's Threading
 Programming Guide is explicit:
@@ -438,7 +438,7 @@ requirement the current architecture doesn't satisfy:
 
 - **Today `AppController.run()` owns the main thread by blocking on a
   `threading.Event`** (`self._shutdown_event.wait()`), and pynput's hotkey callbacks run
-  on a *listener* thread. `[sourced — repo: src/local_flow/app.py, input/hotkeys.py]`
+  on a *listener* thread. `[sourced — repo: src/seda/app.py, input/hotkeys.py]`
 - **AppKit requires the main thread to be blocked in `NSApplication.run()`** ("The main
   thread … is the one blocked in the `run` method of `NSApplication`") and requires all
   `NSView`/`NSWindow`/`NSPanel` work on that thread. `[sourced — item 6]`
@@ -472,7 +472,7 @@ requirement the current architecture doesn't satisfy:
   `colorWithCalibratedWhite_alpha_`; verify the precise bridged names against the
   installed PyObjC (or use the target/selector `NSTimer` variant). `[uncertain]`
 - **[uncertain] Whether `Accessory` policy is compatible with the app being launched as
-  a plain CLI (`python -m local_flow`) with no bundle/Info.plist**, and whether
+  a plain CLI (`python -m seda`) with no bundle/Info.plist**, and whether
   `setActivationPolicy_` alone suffices without `LSUIElement` in a plist. Docs say the
   policy is settable at runtime in 10.9+, but a prototype should confirm no Dock icon
   flashes. `[uncertain]`
@@ -521,6 +521,6 @@ PyObjC (primary):
 - PyObjC core intro (selector→underscore mapping, subclassing, objc.super, NSAutoreleasePool/run loop): <https://pyobjc.readthedocs.io/en/latest/core/intro.html>
 
 Repo files grounding the #16 and item-6 findings:
-- `/Users/I748258/Projects/seda/src/local_flow/app.py` (`AppController.run()` blocks on `threading.Event`)
-- `/Users/I748258/Projects/seda/src/local_flow/input/hotkeys.py` (hotkey callbacks on a listener thread)
-- `/Users/I748258/Projects/seda/src/local_flow/audio/recorder.py` (`peak_level`, `_rms` — one float per audio block)
+- `/Users/I748258/Projects/seda/src/seda/app.py` (`AppController.run()` blocks on `threading.Event`)
+- `/Users/I748258/Projects/seda/src/seda/input/hotkeys.py` (hotkey callbacks on a listener thread)
+- `/Users/I748258/Projects/seda/src/seda/audio/recorder.py` (`peak_level`, `_rms` — one float per audio block)

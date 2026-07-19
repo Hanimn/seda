@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" width="200" height="60">
+  <defs>
+    <style>
+      .bracket { fill: #e6edf3; font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace; font-size: 32px; font-weight: 500; }
+      .wordmark { fill: #e6edf3; font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace; font-size: 28px; font-weight: 600; letter-spacing: 0.05em; }
+      .wave { fill: #2dd4bf; }
+    </style>
+  </defs>
+
+  <!-- Left bracket -->
+  <text x="8" y="42" class="bracket">[</text>
+
+  <!-- Waveform bars -->
+  <rect x="28" y="32" width="4" height="8" rx="1" class="wave"/>
+  <rect x="36" y="26" width="4" height="14" rx="1" class="wave"/>
+  <rect x="44" y="20" width="4" height="20" rx="1" class="wave"/>
+  <rect x="52" y="14" width="4" height="26" rx="1" class="wave"/>
+  <rect x="60" y="20" width="4" height="20" rx="1" class="wave"/>
+  <rect x="68" y="26" width="4" height="14" rx="1" class="wave"/>
+  <rect x="76" y="32" width="4" height="8" rx="1" class="wave"/>
+
+  <!-- Right bracket -->
+  <text x="84" y="42" class="bracket">]</text>
+
+  <!-- Wordmark -->
+  <text x="112" y="42" class="wordmark">seda</text>
+</svg>

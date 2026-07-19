@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from local_flow.config import (
+from seda.config import (
     Config,
     ConfigError,
     default_config_path,
@@ -261,7 +261,7 @@ class TestSelectPushToTalk:
     """Platform-aware push-to-talk selection (issue #9)."""
 
     def test_macos_default_avoids_ctrl_alt_space_and_cmd_space(self) -> None:
-        from local_flow.config import HotkeysConfig, select_push_to_talk
+        from seda.config import HotkeysConfig, select_push_to_talk
 
         key = select_push_to_talk(HotkeysConfig(), platform="darwin")
         # Must not be the Windows/Linux chord (collides with input switcher)
@@ -272,17 +272,17 @@ class TestSelectPushToTalk:
         assert key
 
     def test_windows_default(self) -> None:
-        from local_flow.config import HotkeysConfig, select_push_to_talk
+        from seda.config import HotkeysConfig, select_push_to_talk
 
         assert select_push_to_talk(HotkeysConfig(), platform="win32") == "<ctrl>+<alt>+space"
 
     def test_linux_default(self) -> None:
-        from local_flow.config import HotkeysConfig, select_push_to_talk
+        from seda.config import HotkeysConfig, select_push_to_talk
 
         assert select_push_to_talk(HotkeysConfig(), platform="linux") == "<ctrl>+<alt>+space"
 
     def test_explicit_push_to_talk_overrides_platform_default(self) -> None:
-        from local_flow.config import HotkeysConfig, select_push_to_talk
+        from seda.config import HotkeysConfig, select_push_to_talk
 
         cfg = HotkeysConfig(push_to_talk="<f8>")
         # An explicit user value wins on every platform.
@@ -290,7 +290,7 @@ class TestSelectPushToTalk:
         assert select_push_to_talk(cfg, platform="win32") == "<f8>"
 
     def test_per_platform_field_respected(self) -> None:
-        from local_flow.config import HotkeysConfig, select_push_to_talk
+        from seda.config import HotkeysConfig, select_push_to_talk
 
         cfg = HotkeysConfig(push_to_talk_macos="<cmd>+<shift>+d")
         assert select_push_to_talk(cfg, platform="darwin") == "<cmd>+<shift>+d"
@@ -299,7 +299,7 @@ class TestSelectPushToTalk:
         # The toggle-mode per-platform fields are spec-required data (issue #9);
         # even without a runtime consumer yet, the macOS default must not reuse
         # the Windows/Linux chord.
-        from local_flow.config import HotkeysConfig
+        from seda.config import HotkeysConfig
 
         cfg = HotkeysConfig()
         assert cfg.toggle_mode_macos != "<ctrl>+<alt>+m"
@@ -311,18 +311,18 @@ class TestSelectOverlayEnabled:
     """Overlay enable resolution: flag > explicit config > platform (ADR-0004)."""
 
     def test_default_none_is_on_for_macos(self) -> None:
-        from local_flow.config import OverlayConfig, select_overlay_enabled
+        from seda.config import OverlayConfig, select_overlay_enabled
 
         assert select_overlay_enabled(OverlayConfig(), platform="darwin") is True
 
     def test_default_none_is_off_for_others(self) -> None:
-        from local_flow.config import OverlayConfig, select_overlay_enabled
+        from seda.config import OverlayConfig, select_overlay_enabled
 
         assert select_overlay_enabled(OverlayConfig(), platform="win32") is False
         assert select_overlay_enabled(OverlayConfig(), platform="linux") is False
 
     def test_no_overlay_flag_forces_off_even_on_macos(self) -> None:
-        from local_flow.config import OverlayConfig, select_overlay_enabled
+        from seda.config import OverlayConfig, select_overlay_enabled
 
         # Flag wins over everything, including an explicit enabled=True.
         assert (
@@ -331,7 +331,7 @@ class TestSelectOverlayEnabled:
         )
 
     def test_explicit_true_wins_on_every_platform(self) -> None:
-        from local_flow.config import OverlayConfig, select_overlay_enabled
+        from seda.config import OverlayConfig, select_overlay_enabled
 
         cfg = OverlayConfig(enabled=True)
         assert select_overlay_enabled(cfg, platform="darwin") is True
@@ -340,14 +340,14 @@ class TestSelectOverlayEnabled:
         assert select_overlay_enabled(cfg, platform="linux") is True
 
     def test_explicit_false_wins_on_macos(self) -> None:
-        from local_flow.config import OverlayConfig, select_overlay_enabled
+        from seda.config import OverlayConfig, select_overlay_enabled
 
         assert select_overlay_enabled(OverlayConfig(enabled=False), platform="darwin") is False
 
 
 class TestOverlayConfig:
     def test_default_enabled_is_none(self) -> None:
-        from local_flow.config import OverlayConfig
+        from seda.config import OverlayConfig
 
         assert OverlayConfig().enabled is None
 
@@ -396,7 +396,7 @@ def test_application_overrides_default_empty() -> None:
 
 
 def test_application_overrides_render_as_toml() -> None:
-    from local_flow.config import render_toml
+    from seda.config import render_toml
 
     config = load_config_from_dict(
         {
@@ -416,7 +416,7 @@ def test_application_overrides_round_trip_through_toml() -> None:
     """Rendered TOML can be re-parsed and produces identical config."""
     import tomllib
 
-    from local_flow.config import render_toml
+    from seda.config import render_toml
 
     original = load_config_from_dict(
         {
@@ -469,4 +469,59 @@ def test_render_toml_escapes_strings() -> None:
 def test_default_config_path_ends_with_expected_name() -> None:
     path = default_config_path()
     assert path.name == "config.toml"
-    assert "local-flow" in str(path)
+    assert "seda" in str(path)
+
+
+# --- migration notice (Local Flow → Seda rename) ---------------------------
+
+
+def _patch_config_dirs(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    """Map user_config_path(<app>) to ``root/<app>`` for deterministic tests."""
+    import seda.config as config_module
+
+    def _fake(app_name: str, appauthor: bool = False) -> Path:  # noqa: FBT001,FBT002
+        return root / app_name
+
+    monkeypatch.setattr(config_module, "user_config_path", _fake)
+
+
+def test_migration_notice_when_old_present_and_new_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seda.config import OLD_APP_NAME, migration_notice
+
+    _patch_config_dirs(monkeypatch, tmp_path)
+    (tmp_path / OLD_APP_NAME).mkdir()  # old config exists, new does not
+
+    notice = migration_notice()
+    assert notice is not None
+    assert OLD_APP_NAME in notice
+    assert "seda" in notice
+
+
+def test_no_notice_when_new_config_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from seda.config import APP_NAME, OLD_APP_NAME, migration_notice
+
+    _patch_config_dirs(monkeypatch, tmp_path)
+    (tmp_path / OLD_APP_NAME).mkdir()
+    (tmp_path / APP_NAME).mkdir()  # new dir present → nothing to migrate
+
+    assert migration_notice() is None
+
+
+def test_no_notice_when_neither_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from seda.config import migration_notice
+
+    _patch_config_dirs(monkeypatch, tmp_path)  # neither dir created
+    assert migration_notice() is None
+
+
+def test_migration_notice_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    import seda.config as config_module
+    from seda.config import migration_notice
+
+    def _boom(app_name: str, appauthor: bool = False) -> Path:  # noqa: FBT001,FBT002
+        raise RuntimeError("path resolution exploded")
+
+    monkeypatch.setattr(config_module, "user_config_path", _boom)
+    assert migration_notice() is None

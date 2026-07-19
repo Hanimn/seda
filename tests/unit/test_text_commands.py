@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.text.commands import (
+from seda.text.commands import (
     CommandResult,
     apply_commands,
 )

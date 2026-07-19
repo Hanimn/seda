@@ -2,7 +2,7 @@
 
 This repo's issues are tracked on a GitHub **Project** (Projects v2) that gives a Kanban board and a roadmap view.
 
-- **Project:** Local Flow — Roadmap — <https://github.com/users/Hanimn/projects/1>
+- **Project:** Seda — Roadmap — <https://github.com/users/Hanimn/projects/1>
 - **Owner:** `Hanimn` · **Project number:** `1`
 - **Host:** public github.com (run all `gh` commands with `GH_HOST=github.com`)
 

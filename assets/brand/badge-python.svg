@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="24" viewBox="0 0 96 24">
+  <defs>
+    <style>
+      .label-bg { fill: #161b22; }
+      .value-bg { fill: #21262d; }
+      .label-text { fill: #7d8590; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; font-weight: 500; }
+      .value-text { fill: #2dd4bf; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; font-weight: 600; }
+    </style>
+  </defs>
+  <rect width="96" height="24" rx="4" class="label-bg"/>
+  <rect x="48" width="48" height="24" rx="0" class="value-bg"/>
+  <rect x="92" width="4" height="24" rx="4" class="value-bg"/>
+  <text x="24" y="16" text-anchor="middle" class="label-text">python</text>
+  <text x="72" y="16" text-anchor="middle" class="value-text">3.11+</text>
+</svg>

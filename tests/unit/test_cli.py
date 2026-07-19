@@ -14,12 +14,26 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from local_flow import __version__
-from local_flow.cli import ExitCode, app
+from seda import __version__
+from seda.cli import ExitCode, app
 
 WavFactory = Callable[..., Path]
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _silence_migration_notice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralize the config migration notice by default.
+
+    ``run`` calls :func:`seda.config.migration_notice`, which reads the *real*
+    user config directories — so on a machine that still has an old
+    ``local-flow`` config dir, the notice would leak into unrelated CLI tests.
+    Default it to silent; the dedicated migration test overrides this.
+    """
+    import seda.config as config_module
+
+    monkeypatch.setattr(config_module, "migration_notice", lambda: None)
 
 
 def test_version_prints_version() -> None:
@@ -119,7 +133,7 @@ def test_run_command_help_works() -> None:
 
 def test_run_no_paste_flag_sets_copy_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`--no-paste` runs the controller in copy-only mode without pasting."""
-    import local_flow.app as app_module
+    import seda.app as app_module
 
     captured: dict[str, object] = {}
 
@@ -151,7 +165,7 @@ def test_run_no_cleanup_flag_force_disables_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--no-cleanup` passes cleanup_enabled=False to the controller."""
-    import local_flow.app as app_module
+    import seda.app as app_module
 
     captured: dict[str, object] = {}
 
@@ -174,7 +188,7 @@ def test_run_no_cleanup_flag_force_disables_cleanup(
 def test_run_without_no_cleanup_leaves_cleanup_to_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import local_flow.app as app_module
+    import seda.app as app_module
 
     captured: dict[str, object] = {}
 
@@ -215,7 +229,7 @@ def test_run_scopes_the_semaphore_warning_filter(
     """`run` suppresses ONLY the benign leaked-semaphore warning (#29), not others."""
     import warnings
 
-    import local_flow.app as app_module
+    import seda.app as app_module
 
     class _StubController:
         def __init__(self, config: object, **kwargs: object) -> None:
@@ -254,8 +268,8 @@ def test_run_no_overlay_flag_skips_the_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--no-overlay` must not even attempt the GUI host; it runs the terminal path."""
-    import local_flow.app as app_module
-    import local_flow.gui.host as host_module
+    import seda.app as app_module
+    import seda.gui.host as host_module
 
     ran: list[str] = []
     host_calls: list[str] = []
@@ -284,8 +298,8 @@ def test_run_warns_when_accessibility_untrusted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When macOS Accessibility is NOT granted, `run` prints a clear warning."""
-    import local_flow.app as app_module
-    import local_flow.input.accessibility as accessibility_module
+    import seda.app as app_module
+    import seda.input.accessibility as accessibility_module
 
     class _StubController:
         def __init__(self, config: object, **kwargs: object) -> None:
@@ -309,8 +323,8 @@ def test_run_silent_when_accessibility_trusted_or_unknown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No accessibility warning when trusted (True) or unknown (None, e.g. non-macOS)."""
-    import local_flow.app as app_module
-    import local_flow.input.accessibility as accessibility_module
+    import seda.app as app_module
+    import seda.input.accessibility as accessibility_module
 
     class _StubController:
         def __init__(self, config: object, **kwargs: object) -> None:
@@ -332,12 +346,40 @@ def test_run_silent_when_accessibility_trusted_or_unknown(
         assert "Accessibility permission is not granted" not in result.output
 
 
+def test_run_prints_config_migration_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` surfaces the Local Flow → Seda config migration notice when present."""
+    import seda.app as app_module
+    import seda.config as config_module
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    # Override the autouse silencer for this test only.
+    monkeypatch.setattr(
+        config_module, "migration_notice", lambda: "found configuration under the old 'local-flow'"
+    )
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "--no-overlay", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert "local-flow" in result.output
+    assert "notice:" in result.output
+
+
 def test_run_falls_back_to_blocking_run_when_overlay_declines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When the GUI host returns False, cli.run() runs the controller's own loop (ADR-0001)."""
-    import local_flow.app as app_module
-    import local_flow.gui.host as host_module
+    import seda.app as app_module
+    import seda.gui.host as host_module
 
     ran: list[str] = []
 
@@ -373,8 +415,8 @@ def test_run_propagates_when_overlay_host_raises_after_committing(
     now fails open only for AppKit-setup failures (by returning False); a failure
     after commit (e.g. controller.start()) must surface once, not fall back.
     """
-    import local_flow.app as app_module
-    import local_flow.gui.host as host_module
+    import seda.app as app_module
+    import seda.gui.host as host_module
 
     ran: list[str] = []
 
@@ -405,8 +447,8 @@ def test_run_does_not_call_blocking_run_when_overlay_hosts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When the overlay host owns the loop (returns True), the fallback run() is skipped."""
-    import local_flow.app as app_module
-    import local_flow.gui.host as host_module
+    import seda.app as app_module
+    import seda.gui.host as host_module
 
     ran: list[str] = []
 

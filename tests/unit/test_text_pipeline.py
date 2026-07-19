@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from local_flow.text.pipeline import (
+from seda.text.pipeline import (
     PipelineResult,
     finalize_after_cleanup,
     process_transcript,
@@ -21,7 +21,7 @@ class TestSanitizationApplied:
         assert "\r" not in result.text
 
     def test_null_byte_raises(self) -> None:
-        from local_flow.text.sanitize import InvalidTranscriptError
+        from seda.text.sanitize import InvalidTranscriptError
 
         with pytest.raises(InvalidTranscriptError):
             process_transcript("bad\x00input", mode="standard")
@@ -238,7 +238,7 @@ class TestFinalizeAfterCleanup:
         assert "README.md" in final
 
     def test_finalize_rejects_reordered_placeholders(self) -> None:
-        from local_flow.text.technical_tokens import ProtectionError
+        from seda.text.technical_tokens import ProtectionError
 
         result = process_transcript("check src/a.ts and src/b.ts", mode="standard")
         import re

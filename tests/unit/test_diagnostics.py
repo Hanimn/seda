@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from local_flow.diagnostics import (
+from seda.diagnostics import (
     CheckResult,
     Status,
     check_microphone,
@@ -93,23 +93,23 @@ def test_worst_status_ordering() -> None:
 
 class TestMicrophoneCheck:
     def test_sounddevice_missing_gives_warn(self) -> None:
-        with patch("local_flow.diagnostics._module_available", return_value=False):
+        with patch("seda.diagnostics._module_available", return_value=False):
             result = check_microphone()
         assert result.status is Status.WARN
 
     def test_sounddevice_present_no_devices_gives_warn(self) -> None:
         with (
-            patch("local_flow.diagnostics._module_available", return_value=True),
-            patch("local_flow.diagnostics._list_audio_devices", return_value=[]),
+            patch("seda.diagnostics._module_available", return_value=True),
+            patch("seda.diagnostics._list_audio_devices", return_value=[]),
         ):
             result = check_microphone()
         assert result.status is Status.WARN
 
     def test_sounddevice_present_with_devices_gives_pass(self) -> None:
         with (
-            patch("local_flow.diagnostics._module_available", return_value=True),
+            patch("seda.diagnostics._module_available", return_value=True),
             patch(
-                "local_flow.diagnostics._list_audio_devices",
+                "seda.diagnostics._list_audio_devices",
                 return_value=["Microphone (built-in)"],
             ),
         ):
@@ -120,12 +120,12 @@ class TestMicrophoneCheck:
         assert result.detail
 
     def test_sounddevice_list_error_gives_warn(self) -> None:
-        from local_flow.audio.devices import DeviceError
+        from seda.audio.devices import DeviceError
 
         with (
-            patch("local_flow.diagnostics._module_available", return_value=True),
+            patch("seda.diagnostics._module_available", return_value=True),
             patch(
-                "local_flow.diagnostics._list_audio_devices",
+                "seda.diagnostics._list_audio_devices",
                 side_effect=DeviceError("no devices"),
             ),
         ):
@@ -140,14 +140,14 @@ class TestMicrophoneCheck:
 
 class TestWaylandCheck:
     def test_macos_gives_skip(self) -> None:
-        with patch("local_flow.diagnostics.sys") as mock_sys:
+        with patch("seda.diagnostics.sys") as mock_sys:
             mock_sys.platform = "darwin"
             result = check_wayland()
         assert result.status is Status.SKIP
 
     def test_wayland_session_gives_warn(self) -> None:
         with (
-            patch("local_flow.diagnostics.sys") as mock_sys,
+            patch("seda.diagnostics.sys") as mock_sys,
             patch(
                 "os.environ.get",
                 side_effect=lambda k, d=None: "wayland" if k == "XDG_SESSION_TYPE" else d,
@@ -163,7 +163,7 @@ class TestWaylandCheck:
 
         env = {"XDG_SESSION_TYPE": "x11", "WAYLAND_DISPLAY": ""}
         with (
-            patch("local_flow.diagnostics.sys") as mock_sys,
+            patch("seda.diagnostics.sys") as mock_sys,
             patch.dict(os.environ, env, clear=False),
         ):
             mock_sys.platform = "linux"
@@ -178,34 +178,34 @@ class TestWaylandCheck:
 
 class TestOllamaCheck:
     def test_httpx_missing_gives_skip(self) -> None:
-        with patch("local_flow.diagnostics._module_available", return_value=False):
+        with patch("seda.diagnostics._module_available", return_value=False):
             result = check_ollama(None)
         assert result.status is Status.SKIP
 
     def test_ollama_unreachable_gives_warn(self) -> None:
-        from local_flow.config import load_config_from_dict
+        from seda.config import load_config_from_dict
 
         cfg = load_config_from_dict({"cleanup": {"enabled": True}})
         with (
-            patch("local_flow.diagnostics._module_available", return_value=True),
-            patch("local_flow.diagnostics._ollama_reachable", return_value=False),
+            patch("seda.diagnostics._module_available", return_value=True),
+            patch("seda.diagnostics._ollama_reachable", return_value=False),
         ):
             result = check_ollama(cfg)
         assert result.status is Status.WARN
 
     def test_ollama_reachable_gives_pass(self) -> None:
-        from local_flow.config import load_config_from_dict
+        from seda.config import load_config_from_dict
 
         cfg = load_config_from_dict({"cleanup": {"enabled": True}})
         with (
-            patch("local_flow.diagnostics._module_available", return_value=True),
-            patch("local_flow.diagnostics._ollama_reachable", return_value=True),
+            patch("seda.diagnostics._module_available", return_value=True),
+            patch("seda.diagnostics._ollama_reachable", return_value=True),
         ):
             result = check_ollama(cfg)
         assert result.status is Status.PASS
 
     def test_cleanup_disabled_gives_skip(self) -> None:
-        from local_flow.config import load_config_from_dict
+        from seda.config import load_config_from_dict
 
         cfg = load_config_from_dict({"cleanup": {"enabled": False}})
         result = check_ollama(cfg)
@@ -244,8 +244,8 @@ class TestPermissionsCheck:
 
     def test_macos_trusted_gives_pass(self) -> None:
         with (
-            patch("local_flow.diagnostics.sys") as mock_sys,
-            patch("local_flow.input.accessibility.accessibility_trusted", return_value=True),
+            patch("seda.diagnostics.sys") as mock_sys,
+            patch("seda.input.accessibility.accessibility_trusted", return_value=True),
         ):
             mock_sys.platform = "darwin"
             result = check_permissions()
@@ -254,8 +254,8 @@ class TestPermissionsCheck:
 
     def test_macos_untrusted_gives_warn_with_guidance(self) -> None:
         with (
-            patch("local_flow.diagnostics.sys") as mock_sys,
-            patch("local_flow.input.accessibility.accessibility_trusted", return_value=False),
+            patch("seda.diagnostics.sys") as mock_sys,
+            patch("seda.input.accessibility.accessibility_trusted", return_value=False),
         ):
             mock_sys.platform = "darwin"
             result = check_permissions()
@@ -265,8 +265,8 @@ class TestPermissionsCheck:
 
     def test_macos_unknown_probe_falls_back_to_guidance(self) -> None:
         with (
-            patch("local_flow.diagnostics.sys") as mock_sys,
-            patch("local_flow.input.accessibility.accessibility_trusted", return_value=None),
+            patch("seda.diagnostics.sys") as mock_sys,
+            patch("seda.input.accessibility.accessibility_trusted", return_value=None),
         ):
             mock_sys.platform = "darwin"
             result = check_permissions()
@@ -274,7 +274,7 @@ class TestPermissionsCheck:
         assert "Accessibility" in result.detail
 
     def test_non_macos_gives_skip(self) -> None:
-        with patch("local_flow.diagnostics.sys") as mock_sys:
+        with patch("seda.diagnostics.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = check_permissions()
         assert result.status is Status.SKIP

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 
-from local_flow.notifications import (
+from seda.notifications import (
     ConsoleNotifier,
     FanOutNotifier,
     NotificationEvent,

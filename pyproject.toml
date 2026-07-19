@@ -3,13 +3,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "local-flow"
+name = "seda"
 version = "0.1.0"
 description = "Local-first, system-wide voice dictation optimized for dictating prompts into terminal applications."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
-authors = [{ name = "Local Flow contributors" }]
+authors = [{ name = "Seda contributors" }]
 keywords = ["dictation", "speech-to-text", "local", "privacy", "voice"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
@@ -57,14 +57,14 @@ dev = [
 ]
 
 [project.scripts]
-local-flow = "local_flow.cli:app"
+seda = "seda.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/Hanimn/seda"
 Repository = "https://github.com/Hanimn/seda"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/local_flow"]
+packages = ["src/seda"]
 
 [tool.hatch.build.targets.sdist]
 # Exclude files that must not be bundled in a distributable source archive.
@@ -104,7 +104,7 @@ extend-immutable-calls = ["typer.Option", "typer.Argument"]
 # No python_version pin: mypy infers it from the interpreter it runs under, so
 # each CI matrix job (3.11, 3.12) type-checks against its own version. Pinning
 # 3.11 made the 3.12 job reject PEP 695 `type` statements in newer numpy stubs.
-packages = ["local_flow"]
+packages = ["seda"]
 mypy_path = "src"
 strict = true
 warn_unused_configs = true

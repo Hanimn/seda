@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from local_flow.audio.devices import DeviceError, DeviceInfo, list_devices, resolve_device
+from seda.audio.devices import DeviceError, DeviceInfo, list_devices, resolve_device
 
 
 def _make_raw(
@@ -65,7 +65,7 @@ class TestListDevices:
         sd_broken = MagicMock()
         sd_broken.query_devices.side_effect = OSError("no portaudio")
         monkeypatch.setitem(sys.modules, "sounddevice", sd_broken)
-        from local_flow.errors import AudioError
+        from seda.errors import AudioError
 
         with pytest.raises(AudioError):
             list_devices()
@@ -83,25 +83,25 @@ class TestResolveDevice:
         assert resolve_device(None) is None
 
     def test_by_index_int(self, monkeypatch):
-        monkeypatch.setattr("local_flow.audio.devices.list_devices", self._devs)
+        monkeypatch.setattr("seda.audio.devices.list_devices", self._devs)
         dev = resolve_device(1)
         assert dev is not None
         assert dev.name == "USB Headset"
 
     def test_by_index_string(self, monkeypatch):
-        monkeypatch.setattr("local_flow.audio.devices.list_devices", self._devs)
+        monkeypatch.setattr("seda.audio.devices.list_devices", self._devs)
         dev = resolve_device("2")
         assert dev is not None
         assert dev.name == "RODE NT-USB"
 
     def test_by_exact_name(self, monkeypatch):
-        monkeypatch.setattr("local_flow.audio.devices.list_devices", self._devs)
+        monkeypatch.setattr("seda.audio.devices.list_devices", self._devs)
         dev = resolve_device("USB Headset")
         assert dev is not None
         assert dev.index == 1
 
     def test_by_partial_name_unambiguous(self, monkeypatch):
-        monkeypatch.setattr("local_flow.audio.devices.list_devices", self._devs)
+        monkeypatch.setattr("seda.audio.devices.list_devices", self._devs)
         dev = resolve_device("RODE")
         assert dev is not None
         assert dev.name == "RODE NT-USB"
@@ -111,16 +111,16 @@ class TestResolveDevice:
             DeviceInfo(0, "USB Mic A", 2, 44100.0, True),
             DeviceInfo(1, "USB Mic B", 2, 44100.0, False),
         ]
-        monkeypatch.setattr("local_flow.audio.devices.list_devices", lambda: devs)
+        monkeypatch.setattr("seda.audio.devices.list_devices", lambda: devs)
         with pytest.raises(DeviceError, match="ambiguous"):
             resolve_device("usb")
 
     def test_no_match_raises(self, monkeypatch):
-        monkeypatch.setattr("local_flow.audio.devices.list_devices", self._devs)
+        monkeypatch.setattr("seda.audio.devices.list_devices", self._devs)
         with pytest.raises(DeviceError, match="no input device matching"):
             resolve_device("Phantom Device")
 
     def test_missing_index_raises(self, monkeypatch):
-        monkeypatch.setattr("local_flow.audio.devices.list_devices", self._devs)
+        monkeypatch.setattr("seda.audio.devices.list_devices", self._devs)
         with pytest.raises(DeviceError, match="no input device with index"):
             resolve_device(99)

@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from local_flow.gui.host import Overlay, run_with_overlay
+from seda.gui.host import Overlay, run_with_overlay
 
 
 class _SpyController:
@@ -124,7 +124,7 @@ def test_success_runs_the_loop_starts_controller_and_registers_overlay(
     )
     monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
     # Don't clobber the test runner's SIGINT/SIGTERM handlers.
-    monkeypatch.setattr("local_flow.gui.host.signal.signal", lambda *_a, **_k: None)
+    monkeypatch.setattr("seda.gui.host.signal.signal", lambda *_a, **_k: None)
 
     registered: list[Overlay] = []
     ctrl = _SpyController()
@@ -180,7 +180,7 @@ def test_controller_start_failure_propagates_and_does_not_fall_back(
         "NSApplication", (), {"sharedApplication": staticmethod(lambda: _FakeApp())}
     )
     monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
-    monkeypatch.setattr("local_flow.gui.host.signal.signal", lambda *_a, **_k: None)
+    monkeypatch.setattr("seda.gui.host.signal.signal", lambda *_a, **_k: None)
 
     ctrl = _FailingController()
     # The failure must propagate, NOT be swallowed into a False return.
@@ -221,11 +221,9 @@ def test_host_pre_warms_native_before_starting_the_controller(
         "NSApplication", (), {"sharedApplication": staticmethod(lambda: _FakeApp())}
     )
     monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
-    monkeypatch.setattr("local_flow.gui.host.signal.signal", lambda *_a, **_k: None)
-    monkeypatch.setattr("local_flow.gui.host._warm_input_source", lambda: order.append("warm_tis"))
-    monkeypatch.setattr(
-        "local_flow.gui.host._warm_accessibility_trust", lambda: order.append("warm_ax")
-    )
+    monkeypatch.setattr("seda.gui.host.signal.signal", lambda *_a, **_k: None)
+    monkeypatch.setattr("seda.gui.host._warm_input_source", lambda: order.append("warm_tis"))
+    monkeypatch.setattr("seda.gui.host._warm_accessibility_trust", lambda: order.append("warm_ax"))
 
     class _OrderingController(_SpyController):
         def start(self) -> None:
@@ -252,7 +250,7 @@ def test_warm_accessibility_trust_resolves_the_symbol(monkeypatch: pytest.Monkey
     Resolving it once on the main thread is what caches it on the module so the
     listener thread never re-enters PyObjC's racy lazy-import path.
     """
-    from local_flow.gui.host import _warm_accessibility_trust
+    from seda.gui.host import _warm_accessibility_trust
 
     calls: list[str] = []
     fake_hiservices = types.ModuleType("HIServices")
@@ -265,7 +263,7 @@ def test_warm_accessibility_trust_resolves_the_symbol(monkeypatch: pytest.Monkey
 
 def test_warm_accessibility_trust_swallows_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """A broken/absent HIServices must never raise into the host (fail-open)."""
-    from local_flow.gui.host import _warm_accessibility_trust
+    from seda.gui.host import _warm_accessibility_trust
 
     fake_hiservices = types.ModuleType("HIServices")
 

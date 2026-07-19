@@ -6,8 +6,8 @@ import logging
 
 import pytest
 
-from local_flow.config import Config, load_config_from_dict
-from local_flow.logging_config import LOGGER_NAME, configure_logging, get_logger
+from seda.config import Config, load_config_from_dict
+from seda.logging_config import LOGGER_NAME, configure_logging, get_logger
 
 
 def test_configure_logging_sets_level() -> None:

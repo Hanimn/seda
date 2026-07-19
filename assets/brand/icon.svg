@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <style>
+      .wave { fill: #2dd4bf; }
+    </style>
+  </defs>
+
+  <!-- Waveform bars only - for favicon/small contexts -->
+  <rect x="4" y="18" width="3" height="6" rx="1" class="wave"/>
+  <rect x="9" y="14" width="3" height="10" rx="1" class="wave"/>
+  <rect x="14" y="9" width="3" height="15" rx="1" class="wave"/>
+  <rect x="19" y="14" width="3" height="10" rx="1" class="wave"/>
+  <rect x="24" y="18" width="3" height="6" rx="1" class="wave"/>
+</svg>

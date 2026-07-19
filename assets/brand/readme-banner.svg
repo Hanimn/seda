@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap');
+      .bg { fill: #0d1117; }
+      .bracket { fill: #e6edf3; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 120px; font-weight: 500; }
+      .wordmark { fill: #e6edf3; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 96px; font-weight: 700; letter-spacing: 0.08em; }
+      .tagline { fill: #7d8590; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 28px; font-weight: 400; }
+      .wave { fill: #2dd4bf; }
+      .grid-line { stroke: #21262d; stroke-width: 1; }
+      .terminal-prompt { fill: #7d8590; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 18px; }
+      .terminal-cmd { fill: #e6edf3; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 18px; }
+      .terminal-accent { fill: #2dd4bf; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 18px; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" class="bg"/>
+
+  <!-- Subtle grid pattern -->
+  <g opacity="0.3">
+    <line x1="0" y1="160" x2="1280" y2="160" class="grid-line"/>
+    <line x1="0" y1="320" x2="1280" y2="320" class="grid-line"/>
+    <line x1="0" y1="480" x2="1280" y2="480" class="grid-line"/>
+    <line x1="320" y1="0" x2="320" y2="640" class="grid-line"/>
+    <line x1="640" y1="0" x2="640" y2="640" class="grid-line"/>
+    <line x1="960" y1="0" x2="960" y2="640" class="grid-line"/>
+  </g>
+
+  <!-- Logo group - centered -->
+  <g transform="translate(640, 260)">
+    <!-- Left bracket -->
+    <text x="-280" y="40" class="bracket">[</text>
+
+    <!-- Waveform bars - centered, larger -->
+    <rect x="-200" y="0" width="16" height="32" rx="3" class="wave"/>
+    <rect x="-170" y="-24" width="16" height="56" rx="3" class="wave"/>
+    <rect x="-140" y="-48" width="16" height="80" rx="3" class="wave"/>
+    <rect x="-110" y="-72" width="16" height="104" rx="3" class="wave"/>
+    <rect x="-80" y="-48" width="16" height="80" rx="3" class="wave"/>
+    <rect x="-50" y="-24" width="16" height="56" rx="3" class="wave"/>
+    <rect x="-20" y="0" width="16" height="32" rx="3" class="wave"/>
+
+    <!-- Right bracket -->
+    <text x="20" y="40" class="bracket">]</text>
+
+    <!-- Wordmark -->
+    <text x="140" y="36" class="wordmark">seda</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="640" y="400" text-anchor="middle" class="tagline">local-first voice dictation for developers</text>
+
+  <!-- Terminal preview - bottom left -->
+  <g transform="translate(80, 520)">
+    <text x="0" y="0" class="terminal-prompt">$</text>
+    <text x="24" y="0" class="terminal-cmd">seda run</text>
+    <text x="0" y="32" class="terminal-accent">listening...</text>
+  </g>
+
+  <!-- Feature hints - bottom right -->
+  <g transform="translate(960, 520)">
+    <text x="0" y="0" class="terminal-prompt"># no cloud</text>
+    <text x="0" y="32" class="terminal-prompt"># runs offline</text>
+  </g>
+</svg>

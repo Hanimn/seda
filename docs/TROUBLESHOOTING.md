@@ -2,19 +2,19 @@
 
 ## No microphone detected
 
-Run `local-flow devices` to list input devices. If the list is empty:
+Run `seda devices` to list input devices. If the list is empty:
 
 - Check that your microphone is connected and not muted at the OS level.
 - On macOS: System Settings → Privacy & Security → Microphone — ensure Terminal (or your terminal app) is allowed.
 - On Linux: check that `pulseaudio` or `pipewire` is running and your user is in the `audio` group.
-- Try `local-flow test-mic` to verify levels before starting the dictation loop.
+- Try `seda test-mic` to verify levels before starting the dictation loop.
 
 ## Model download failure
 
-Run `local-flow models download small.en`. If it fails:
+Run `seda models download small.en`. If it fails:
 
 - Check your internet connection.
-- Confirm you have write access to the model cache directory (`local-flow config show-effective` shows `download_root`).
+- Confirm you have write access to the model cache directory (`seda config show-effective` shows `download_root`).
 - Proxy environments: set `HTTPS_PROXY` / `HTTP_PROXY` environment variables before running the command.
 - Hugging Face may rate-limit; wait and retry.
 
@@ -23,10 +23,10 @@ Run `local-flow models download small.en`. If it fails:
 If you see "model not available" when starting the app:
 
 ```bash
-local-flow models download small.en   # or your configured model
+seda models download small.en   # or your configured model
 ```
 
-The model name must match `transcription.model` in your config. Run `local-flow models list-local` to see what's cached.
+The model name must match `transcription.model` in your config. Run `seda models list-local` to see what's cached.
 
 ## Slow CPU transcription
 
@@ -35,11 +35,11 @@ CPU transcription is expected to be slower than GPU. Typical targets (not hard r
 - Short utterance (< 5 s audio): under 5 s on a modern CPU.
 - Improve latency by using `base.en` instead of `small.en`, or by enabling CUDA if available.
 
-Check `local-flow doctor` for CUDA status. On Apple Silicon, `faster-whisper` runs on CPU; an MLX backend is a planned future enhancement.
+Check `seda doctor` for CUDA status. On Apple Silicon, `faster-whisper` runs on CPU; an MLX backend is a planned future enhancement.
 
 ## CUDA not detected
 
-`local-flow doctor` reports CUDA status. If not detected:
+`seda doctor` reports CUDA status. If not detected:
 
 - Ensure `ctranslate2` was built with CUDA support (check `pip show ctranslate2`).
 - Set `transcription.compute_type = "auto"` in your config — the backend will select the best available compute type.
@@ -49,7 +49,7 @@ Check `local-flow doctor` for CUDA status. On Apple Silicon, `faster-whisper` ru
 
 Global hotkeys require the Accessibility permission on macOS (System Settings → Privacy & Security → Accessibility). Without it:
 
-- `pynput` cannot register global hotkeys, and `local-flow run` will fail to detect the push-to-talk key.
+- `pynput` cannot register global hotkeys, and `seda run` will fail to detect the push-to-talk key.
 - You will see a message like `This process is not trusted! Input event monitoring will not be possible until it is added to accessibility clients.` on startup — the app keeps running but the hotkey is inert.
 - If you see no response when holding the configured hotkey, check Accessibility permissions for your terminal application.
 - After granting, fully quit (Cmd-Q) and reopen the terminal — the permission only takes effect on a fresh launch.
@@ -64,7 +64,7 @@ If the configured hotkey does not trigger dictation:
 - Another application may have registered the same global hotkey. Common conflicts: screenshot tools (`cmd+shift+5`), password managers, window managers.
 - On macOS, `<ctrl>+<alt>+space` can also collide with the input-source (keyboard-layout) switcher. The default push-to-talk on macOS is therefore `<ctrl>+<shift>+space`, not the Windows/Linux `<ctrl>+<alt>+space` — the per-platform defaults live in the `[hotkeys]` config section (`push_to_talk_macos` / `_windows` / `_linux`).
 - Change `hotkeys.push_to_talk` in your config to pin a specific chord on every platform, or edit the per-platform `push_to_talk_*` default for just one OS.
-- Run `local-flow doctor` — the `Global hotkeys` check will report if `pynput` is importable.
+- Run `seda doctor` — the `Global hotkeys` check will report if `pynput` is importable.
 
 ## Paste shortcut mismatch
 
@@ -77,18 +77,18 @@ If text appears on the clipboard but is not inserted at the cursor:
   application = "gnome-terminal"
   shortcut = "ctrl+shift+v"
   ```
-- Use `local-flow run --no-paste` to copy only; paste manually to confirm the transcript is correct.
+- Use `seda run --no-paste` to copy only; paste manually to confirm the transcript is correct.
 
 ## Wayland limitations
 
 On Wayland compositors, global hotkeys and simulated input may not work because the compositor restricts cross-application input access.
 
 Options:
-- Configure a global shortcut in your compositor that invokes `local-flow` directly via the CLI.
+- Configure a global shortcut in your compositor that invokes `seda` directly via the CLI.
 - Use X11 (XWayland) mode if your compositor supports it.
-- Use `local-flow transcribe FILE` for file-based transcription instead of live dictation.
+- Use `seda transcribe FILE` for file-based transcription instead of live dictation.
 
-`local-flow doctor` reports the detected session type.
+`seda doctor` reports the detected session type.
 
 ## Clipboard not restored
 
@@ -101,7 +101,7 @@ The prior clipboard is restored only when the clipboard still holds the inserted
 
 ## Ollama unavailable
 
-If you have enabled cleanup (`cleanup.enabled = true`) and `local-flow doctor` reports Ollama unreachable:
+If you have enabled cleanup (`cleanup.enabled = true`) and `seda doctor` reports Ollama unreachable:
 
 ```bash
 ollama serve                         # start Ollama
@@ -115,7 +115,7 @@ Confirm the base URL matches your Ollama instance: `cleanup.ollama.base_url` def
 If the LLM cleanup stage returns answers or code instead of cleaned prose:
 
 - The validation layer rejects obvious assistant prefaces and answers — if they appear, the raw transcript was used.
-- Use `local-flow run --no-cleanup` to disable cleanup for a session.
+- Use `seda run --no-cleanup` to disable cleanup for a session.
 - Try a different model (`cleanup.ollama.model`): small instruction models can misinterpret technical prompts. `qwen2.5:3b` is the recommended default.
 - Switch to `app.mode = "literal"` to bypass cleanup entirely and preserve all technical names exactly.
 
