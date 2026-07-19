@@ -1,4 +1,4 @@
-# Local Flow — Implementation Plan
+# Seda — Implementation Plan
 
 ## 1. Project summary
 
@@ -18,7 +18,7 @@ The application must:
 Working project name:
 
 ```text
-local-flow
+seda
 ```
 
 ---
@@ -450,7 +450,7 @@ Application controller/state machine
 ## Suggested directory structure
 
 ```text
-local-flow/
+seda/
 ├── README.md
 ├── IMPLEMENTATION_PLAN.md
 ├── LICENSE
@@ -462,7 +462,7 @@ local-flow/
 │   ├── install_linux.sh
 │   └── install_windows.ps1
 ├── src/
-│   └── local_flow/
+│   └── seda/
 │       ├── __init__.py
 │       ├── __main__.py
 │       ├── app.py
@@ -630,14 +630,14 @@ Store user configuration in TOML.
 
 Default paths:
 
-- macOS: `~/Library/Application Support/local-flow/config.toml`
-- Linux: `~/.config/local-flow/config.toml`
-- Windows: `%APPDATA%\local-flow\config.toml`
+- macOS: `~/Library/Application Support/seda/config.toml`
+- Linux: `~/.config/seda/config.toml`
+- Windows: `%APPDATA%\seda\config.toml`
 
 Allow overriding it with:
 
 ```bash
-local-flow run --config /path/to/config.toml
+seda run --config /path/to/config.toml
 ```
 
 ## Example configuration
@@ -771,8 +771,8 @@ On stop:
 Implement commands:
 
 ```bash
-local-flow devices
-local-flow devices --json
+seda devices
+seda devices --json
 ```
 
 Display:
@@ -794,7 +794,7 @@ Allow selection by:
 Implement:
 
 ```bash
-local-flow test-mic
+seda test-mic
 ```
 
 Behavior:
@@ -845,9 +845,9 @@ If the model is not present:
 Commands:
 
 ```bash
-local-flow models recommend
-local-flow models download small.en
-local-flow run --offline
+seda models recommend
+seda models download small.en
+seda run --offline
 ```
 
 In offline mode:
@@ -1082,7 +1082,7 @@ Possible sources:
 - Current working directory name
 - Git-tracked filenames
 - Immediate directory names
-- A user-maintained `.local-flow-vocabulary`
+- A user-maintained `.seda-vocabulary`
 - Common identifiers extracted locally from filenames
 
 This feature must be opt-in because recursively scanning a repository can affect startup time and expose names in logs.
@@ -1095,7 +1095,7 @@ enabled = false
 root = ""
 include_git_filenames = true
 include_directory_names = true
-vocabulary_file = ".local-flow-vocabulary"
+vocabulary_file = ".seda-vocabulary"
 maximum_terms = 500
 ```
 
@@ -1526,34 +1526,34 @@ Use Typer or Click. Prefer Typer if dependency weight is acceptable.
 ## Commands
 
 ```bash
-local-flow run
-local-flow run --config PATH
-local-flow run --offline
-local-flow run --foreground
-local-flow run --no-cleanup
-local-flow run --no-paste
+seda run
+seda run --config PATH
+seda run --offline
+seda run --foreground
+seda run --no-cleanup
+seda run --no-paste
 
-local-flow transcribe FILE
-local-flow transcribe FILE --mode literal
-local-flow transcribe FILE --copy
-local-flow transcribe FILE --stdout
+seda transcribe FILE
+seda transcribe FILE --mode literal
+seda transcribe FILE --copy
+seda transcribe FILE --stdout
 
-local-flow devices
-local-flow devices --json
-local-flow test-mic
-local-flow test-mic --save test.wav
+seda devices
+seda devices --json
+seda test-mic
+seda test-mic --save test.wav
 
-local-flow config path
-local-flow config init
-local-flow config validate
-local-flow config show-effective
+seda config path
+seda config init
+seda config validate
+seda config show-effective
 
-local-flow models recommend
-local-flow models download MODEL
-local-flow models list-local
+seda models recommend
+seda models download MODEL
+seda models list-local
 
-local-flow doctor
-local-flow version
+seda doctor
+seda version
 ```
 
 ## `doctor`
@@ -1587,7 +1587,7 @@ SKIP
 Support machine-readable output:
 
 ```bash
-local-flow doctor --json
+seda doctor --json
 ```
 
 Do not include secrets, transcript content, clipboard content, or environment variable values.
@@ -1800,7 +1800,7 @@ Exact versions should be selected after compatibility testing. Pin upper/lower b
 
 ```toml
 [project.scripts]
-local-flow = "local_flow.cli:app"
+seda = "seda.cli:app"
 ```
 
 ## Model storage
@@ -1815,10 +1815,10 @@ Document:
 
 ```bash
 uv sync --extra whisper --extra dev
-uv run local-flow doctor
-uv run local-flow config init
-uv run local-flow models download small.en
-uv run local-flow run
+uv run seda doctor
+uv run seda config init
+uv run seda models download small.en
+uv run seda run
 ```
 
 Also document `pip` installation.
@@ -2274,7 +2274,7 @@ These counters:
 Optional command:
 
 ```bash
-local-flow status
+seda status
 ```
 
 Example:
@@ -2477,10 +2477,10 @@ Deliver:
 Commands that should work:
 
 ```bash
-local-flow version
-local-flow config init
-local-flow config validate
-local-flow doctor
+seda version
+seda config init
+seda config validate
+seda doctor
 ```
 
 Acceptance:
@@ -2498,13 +2498,13 @@ Deliver:
 - Backend factory
 - Model loading
 - Offline behavior
-- `local-flow transcribe FILE`
+- `seda transcribe FILE`
 - Timing diagnostics
 
 Acceptance:
 
 ```bash
-local-flow transcribe sample.wav --stdout
+seda transcribe sample.wav --stdout
 ```
 
 returns a transcript using a local model.
@@ -3184,7 +3184,7 @@ If commits are requested:
 Suggested commit sequence:
 
 ```text
-chore: initialize local-flow project
+chore: initialize seda project
 feat: add configuration and diagnostics
 feat: add local transcription backend
 feat: add microphone recording pipeline
@@ -3206,7 +3206,7 @@ The completed repository must contain the following deliverables.
 At minimum:
 
 ```text
-src/local_flow/
+src/seda/
 ├── __init__.py
 ├── __main__.py
 ├── app.py
@@ -3241,7 +3241,7 @@ config.example.toml
 The package must expose:
 
 ```bash
-local-flow
+seda
 ```
 
 ## Documentation
@@ -3419,7 +3419,7 @@ uv run pytest -m "not integration" -q
 
 ```bash
 uv run pytest tests/unit \
-  --cov=local_flow \
+  --cov=seda \
   --cov-report=term-missing
 ```
 
@@ -3442,15 +3442,15 @@ Inspect package contents to ensure user files, models, audio, and caches are exc
 ## Step 10 — CLI smoke tests
 
 ```bash
-uv run local-flow --help
-uv run local-flow version
-uv run local-flow config init --help
-uv run local-flow config validate
-uv run local-flow devices --help
-uv run local-flow test-mic --help
-uv run local-flow transcribe --help
-uv run local-flow doctor
-uv run local-flow doctor --json
+uv run seda --help
+uv run seda version
+uv run seda config init --help
+uv run seda config validate
+uv run seda devices --help
+uv run seda test-mic --help
+uv run seda transcribe --help
+uv run seda doctor
+uv run seda doctor --json
 ```
 
 Commands requiring unavailable hardware may return documented warnings, but they must not crash with an unhandled traceback.
@@ -3481,7 +3481,7 @@ Confirm:
 With a locally available model:
 
 ```bash
-uv run local-flow run --offline --foreground
+uv run seda run --offline --foreground
 ```
 
 Verify that:
@@ -3494,8 +3494,8 @@ Verify that:
 ## Step 13 — Manual microphone check
 
 ```bash
-uv run local-flow devices
-uv run local-flow test-mic
+uv run seda devices
+uv run seda test-mic
 ```
 
 Verify:
@@ -3510,7 +3510,7 @@ Verify:
 Using an approved local test fixture:
 
 ```bash
-uv run local-flow transcribe tests/fixtures/audio/technical_phrase.wav --stdout
+uv run seda transcribe tests/fixtures/audio/technical_phrase.wav --stdout
 ```
 
 Verify:
@@ -3523,7 +3523,7 @@ Verify:
 
 In a safe text target or empty Claude Code prompt:
 
-1. Start `local-flow run --foreground`.
+1. Start `seda run --foreground`.
 2. Focus the target application.
 3. Hold the push-to-talk hotkey.
 4. Dictate a harmless prompt.
@@ -3613,7 +3613,7 @@ IMPLEMENTATION_PLAN.md
 Then provide Claude Code with the following prompt.
 
 ```text
-Implement the local-flow project described in IMPLEMENTATION_PLAN.md.
+Implement the seda project described in IMPLEMENTATION_PLAN.md.
 
 First, read the entire plan and inspect the current repository. Do not begin
 coding until you understand the safety requirements, architecture, phase
