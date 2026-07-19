@@ -17,6 +17,26 @@ import pytest
 from seda.gui.host import Overlay, run_with_overlay
 
 
+class _FakeTimer:
+    """Stand-in for the pump NSTimer; records invalidation."""
+
+    def __init__(self) -> None:
+        self.invalidated = False
+
+    def invalidate(self) -> None:
+        self.invalidated = True
+
+
+@pytest.fixture(autouse=True)
+def _stub_pump_timer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the signal-pump timer scheduler (needs Foundation, macOS only).
+
+    Keeps every host test importable and runnable on non-macOS CI. Tests that
+    care about the pump callback invoke it directly.
+    """
+    monkeypatch.setattr("seda.gui.host._schedule_pump", lambda _i, _cb: _FakeTimer())
+
+
 class _SpyController:
     """Records host interactions and exposes the level source."""
 
@@ -35,11 +55,12 @@ class _SpyController:
         pass
 
 
-def _fake_overlay() -> Overlay:
+def _fake_overlay(teardown: Callable[[], None] | None = None) -> Overlay:
     return Overlay(
         show=lambda: None,
         hide=lambda: None,
         dispatch_main=lambda fn: fn(),
+        teardown=teardown,
         _panel=None,
         _view=None,
         _timer_holder={"timer": None},
@@ -275,3 +296,232 @@ def test_warm_accessibility_trust_swallows_failure(monkeypatch: pytest.MonkeyPat
 
     # Must not raise.
     _warm_accessibility_trust()
+
+
+# --- overlay teardown on shutdown (HUD must never linger) -------------------
+
+
+def _appkit_stub(monkeypatch: pytest.MonkeyPatch, run_impl: Callable[[], None]) -> None:
+    """Install a fake AppKit whose NSApplication.run() calls ``run_impl``."""
+
+    class _FakeApp:
+        def run(self) -> None:
+            run_impl()
+
+        def stop_(self, _sender: Any) -> None:  # noqa: N802
+            pass
+
+    fake_appkit = types.ModuleType("AppKit")
+    fake_appkit.NSApplication = type(  # type: ignore[attr-defined]
+        "NSApplication", (), {"sharedApplication": staticmethod(lambda: _FakeApp())}
+    )
+    monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
+    monkeypatch.setattr("seda.gui.host.signal.signal", lambda *_a, **_k: None)
+
+
+def test_teardown_runs_on_normal_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When app.run() returns normally, the overlay is torn down (HUD removed)."""
+    torn: list[str] = []
+    _appkit_stub(monkeypatch, run_impl=lambda: None)  # run() returns immediately
+
+    result = run_with_overlay(
+        _SpyController(),  # type: ignore[arg-type]
+        build=lambda _level: _fake_overlay(teardown=lambda: torn.append("torn")),
+        platform="darwin",
+    )
+    assert result is True
+    assert torn == ["torn"], "overlay.teardown() must run when the run loop exits"
+
+
+def test_teardown_runs_when_controller_start_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crash in controller.start() still tears the overlay down (finally)."""
+    torn: list[str] = []
+
+    class _FailingController:
+        latest_level = 0.0
+
+        def start(self) -> None:
+            raise RuntimeError("backend failed to load")
+
+        def shutdown(self) -> None:  # pragma: no cover
+            pass
+
+        def run(self) -> None:  # pragma: no cover
+            pass
+
+    # app.run() must not be reached; start() raises first.
+    _appkit_stub(monkeypatch, run_impl=lambda: torn.append("SHOULD_NOT_RUN"))
+
+    with pytest.raises(RuntimeError, match="backend failed to load"):
+        run_with_overlay(
+            _FailingController(),  # type: ignore[arg-type]
+            build=lambda _level: _fake_overlay(teardown=lambda: torn.append("torn")),
+            platform="darwin",
+        )
+    assert torn == ["torn"], "teardown must run even when start() crashes before the loop"
+
+
+def test_teardown_runs_when_run_loop_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An exception out of app.run() still tears the overlay down."""
+    torn: list[str] = []
+
+    def _boom() -> None:
+        raise RuntimeError("run loop exploded")
+
+    _appkit_stub(monkeypatch, run_impl=_boom)
+
+    with pytest.raises(RuntimeError, match="run loop exploded"):
+        run_with_overlay(
+            _SpyController(),  # type: ignore[arg-type]
+            build=lambda _level: _fake_overlay(teardown=lambda: torn.append("torn")),
+            platform="darwin",
+        )
+    assert torn == ["torn"], "teardown must run when the run loop raises"
+
+
+def test_broken_teardown_does_not_mask_the_original_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing teardown is swallowed so the real crash still surfaces."""
+
+    def _boom_run() -> None:
+        raise RuntimeError("the real error")
+
+    def _boom_teardown() -> None:
+        raise RuntimeError("teardown also broke")
+
+    _appkit_stub(monkeypatch, run_impl=_boom_run)
+
+    # The ORIGINAL error must propagate, not the teardown error.
+    with pytest.raises(RuntimeError, match="the real error"):
+        run_with_overlay(
+            _SpyController(),  # type: ignore[arg-type]
+            build=lambda _level: _fake_overlay(teardown=_boom_teardown),
+            platform="darwin",
+        )
+
+
+def test_overlay_defaults_teardown_to_noop() -> None:
+    """A hand-built Overlay without teardown has a safe no-op default."""
+    overlay = Overlay(
+        show=lambda: None,
+        hide=lambda: None,
+        dispatch_main=lambda fn: fn(),
+        _panel=None,
+        _view=None,
+        _timer_holder={"timer": None},
+    )
+    # Must be callable and not raise.
+    overlay.teardown()
+
+
+# --- signal handling under the Cocoa run loop (no hang on Ctrl-C) -----------
+
+
+def test_signal_pump_shuts_down_and_stops_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stop request serviced by the pump shuts the controller down and stops run().
+
+    Regression: NSApplication.run() does not yield to Python's signal handler, so
+    the app used to hang on SIGINT/SIGTERM and could only be force-killed — which
+    skipped overlay teardown and left the HUD on screen. The pump timer services
+    the signal, runs controller.shutdown(), and stops the loop.
+    """
+    events: list[str] = []
+    captured: dict[str, Callable[[Any], None]] = {}
+    handlers: dict[int, Callable[[int, Any], None]] = {}
+
+    class _SpyCtrl:
+        latest_level = 0.0
+
+        def start(self) -> None:
+            events.append("start")
+
+        def shutdown(self) -> None:
+            events.append("shutdown")
+
+        def run(self) -> None:  # pragma: no cover
+            pass
+
+    class _FakeApp:
+        def run(self) -> None:
+            # Simulate the run loop: a SIGINT arrives, then the pump fires.
+            events.append("run")
+            handlers[__import__("signal").SIGINT](__import__("signal").SIGINT, None)
+            captured["pump"](None)  # pump services the pending stop
+
+        def stop_(self, _sender: Any) -> None:  # noqa: N802
+            events.append("stop")
+
+    fake_appkit = types.ModuleType("AppKit")
+    fake_appkit.NSApplication = type(  # type: ignore[attr-defined]
+        "NSApplication", (), {"sharedApplication": staticmethod(lambda: _FakeApp())}
+    )
+    monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
+    # Capture installed signal handlers instead of touching the real ones.
+    monkeypatch.setattr(
+        "seda.gui.host.signal.signal",
+        lambda signum, handler: handlers.__setitem__(signum, handler),
+    )
+    # Capture the pump callback; return a fake timer.
+    monkeypatch.setattr(
+        "seda.gui.host._schedule_pump",
+        lambda _i, cb: (captured.__setitem__("pump", cb), _FakeTimer())[1],
+    )
+    # Neutralize the wakeup-event post (needs AppKit event classes).
+    monkeypatch.setattr("seda.gui.host._post_wakeup_event", lambda _app: None)
+
+    result = run_with_overlay(
+        _SpyCtrl(),  # type: ignore[arg-type]
+        build=lambda _level: _fake_overlay(),
+        platform="darwin",
+    )
+
+    assert result is True
+    # The pump serviced the signal: controller shut down and the loop was stopped.
+    assert "shutdown" in events, "pump must run controller.shutdown() on a stop request"
+    assert "stop" in events, "pump must stop the run loop on a stop request"
+    assert events.index("shutdown") < events.index("stop"), "shutdown before stopping the loop"
+
+
+def test_pump_ignores_when_no_stop_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pump is a no-op until a signal sets the stop flag (no premature shutdown)."""
+    events: list[str] = []
+    captured: dict[str, Callable[[Any], None]] = {}
+
+    class _SpyCtrl:
+        latest_level = 0.0
+
+        def start(self) -> None:
+            pass
+
+        def shutdown(self) -> None:  # pragma: no cover - must NOT run
+            events.append("shutdown")
+
+        def run(self) -> None:  # pragma: no cover
+            pass
+
+    class _FakeApp:
+        def run(self) -> None:
+            # Pump fires with no pending signal → must do nothing.
+            captured["pump"](None)
+
+        def stop_(self, _sender: Any) -> None:  # noqa: N802 pragma: no cover
+            events.append("stop")
+
+    fake_appkit = types.ModuleType("AppKit")
+    fake_appkit.NSApplication = type(  # type: ignore[attr-defined]
+        "NSApplication", (), {"sharedApplication": staticmethod(lambda: _FakeApp())}
+    )
+    monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
+    monkeypatch.setattr("seda.gui.host.signal.signal", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "seda.gui.host._schedule_pump",
+        lambda _i, cb: (captured.__setitem__("pump", cb), _FakeTimer())[1],
+    )
+
+    run_with_overlay(
+        _SpyCtrl(),  # type: ignore[arg-type]
+        build=lambda _level: _fake_overlay(),
+        platform="darwin",
+    )
+    assert events == [], "pump must not shut down or stop when no signal is pending"

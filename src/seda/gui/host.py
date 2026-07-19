@@ -47,6 +47,7 @@ class Overlay:
         show: Callable[[], None],
         hide: Callable[[], None],
         dispatch_main: Callable[[Callable[[], None]], None],
+        teardown: Callable[[], None] | None = None,
         _panel: Any,
         _view: Any,
         _timer_holder: dict[str, Any],
@@ -54,6 +55,10 @@ class Overlay:
         self.show = show
         self.hide = hide
         self.dispatch_main = dispatch_main
+        # Deterministic teardown: stop the redraw timer and order out + close the
+        # panel so the HUD never lingers after the app exits (normal, signal, or
+        # crash). Defaults to a no-op for hand-built test overlays.
+        self.teardown = teardown if teardown is not None else (lambda: None)
         self._panel = _panel
         self._view = _view
         self._timer_holder = _timer_holder
@@ -199,6 +204,26 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
             timer_holder["timer"] = None
         panel.orderOut_(None)
 
+    def _teardown() -> None:
+        # Deterministic teardown so the HUD never lingers after the app exits.
+        # Stop the redraw timer, then order out AND close the panel — closing
+        # releases the window so it does not survive as an orphaned window even
+        # briefly. Idempotent and fail-open: each step is guarded so a
+        # double-teardown or an already-closed panel is a harmless no-op, and a
+        # failure here must never block shutdown. Must run on the main thread.
+        timer = timer_holder["timer"]
+        if timer is not None:
+            try:
+                timer.invalidate()
+            except Exception:  # noqa: BLE001
+                logger.debug("overlay timer invalidate failed", exc_info=True)
+            timer_holder["timer"] = None
+        try:
+            panel.orderOut_(None)
+            panel.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("overlay panel teardown failed", exc_info=True)
+
     def _dispatch_main(fn: Callable[[], None]) -> None:
         # Marshal a call onto the main thread/run loop (ADR-0001/#17). notify()
         # runs on the hotkey-listener / worker threads; AppKit must run on main.
@@ -210,6 +235,7 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
         show=_show,
         hide=_hide,
         dispatch_main=_dispatch_main,
+        teardown=_teardown,
         _panel=panel,
         _view=view,
         _timer_holder=timer_holder,
@@ -285,17 +311,40 @@ def _run_appkit_host(
     if register_overlay is not None:
         register_overlay(overlay)
 
-    # Install SIGINT/SIGTERM on the main thread (Python only allows this on
-    # main). The handler stops the controller, then the AppKit run loop, so the
-    # main thread unblocks and the process exits cleanly (ADR-0001).
-    def _handle_signal(_signum: int, _frame: Any) -> None:
+    # --- Signal handling under a Cocoa run loop --------------------------------
+    # NSApplication.run() blocks in native code and does NOT yield to Python's
+    # signal machinery, so a signal.signal() handler installed here would never
+    # fire while we are blocked in run() — SIGINT/SIGTERM would be ignored and
+    # the app could only be force-killed (which then skips the graceful overlay
+    # teardown below, leaving the HUD on screen). Fix: the signal handler only
+    # sets a flag; a repeating "pump" timer wakes the run loop ~10x/second so
+    # the interpreter regains control and runs the handler, then performs the
+    # actual shutdown and stops the loop.
+    stop_requested = {"flag": False}
+
+    def _request_stop(_signum: int, _frame: Any) -> None:
+        # Runs on the main thread the next time the interpreter gets control
+        # (nudged by the pump timer). Keep it tiny — just record the request.
+        stop_requested["flag"] = True
+
+    signal.signal(signal.SIGINT, _request_stop)
+    signal.signal(signal.SIGTERM, _request_stop)
+
+    def _pump(_timer: Any) -> None:
+        # Servicing point: pending Python signal handlers have run by the time we
+        # get here, so the flag reflects any SIGINT/SIGTERM. On a stop request,
+        # shut the controller down, stop the run loop, and post a dummy event so
+        # stop_ takes effect immediately (stop_ is only checked between events;
+        # without an event the loop can idle-wait and delay exit).
+        if not stop_requested["flag"]:
+            return
         try:
             controller.shutdown()
         finally:
             app.stop_(None)
+            _post_wakeup_event(app)
 
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
+    pump = _schedule_pump(0.1, _pump)
 
     # Warm the macOS native machinery pynput's darwin listener touches on its
     # OWN thread, doing it here on the MAIN thread first so those one-time,
@@ -313,8 +362,61 @@ def _run_appkit_host(
     _warm_input_source()
     _warm_accessibility_trust()
 
-    controller.start()  # non-blocking setup (load model, start hotkeys, notify READY)
-    app.run()  # blocks the main thread until app.stop_ is called
+    # Tear the overlay down on EVERY exit from the run loop — normal
+    # signal-driven stop, and any exception propagating out of controller.start()
+    # or app.run() (a crash). Without this the HUD panel can linger on screen
+    # after the app exits, because controller.shutdown() does not touch the
+    # overlay and process-exit reclamation is not immediate/guaranteed. We are on
+    # the main thread here, so calling teardown directly is safe. teardown() is
+    # itself fail-open, but guard again so a teardown error can never mask the
+    # original crash.
+    try:
+        controller.start()  # non-blocking setup (load model, start hotkeys, notify READY)
+        app.run()  # blocks the main thread until app.stop_ is called
+    finally:
+        # Stop the pump timer first (it references app/controller), then tear the
+        # overlay down. Both guarded so a cleanup error never masks a crash.
+        try:
+            pump.invalidate()
+        except Exception:  # noqa: BLE001
+            logger.debug("pump timer invalidate failed", exc_info=True)
+        try:
+            overlay.teardown()
+        except Exception:  # noqa: BLE001
+            logger.warning("overlay teardown failed during shutdown", exc_info=True)
+
+
+def _schedule_pump(interval: float, callback: Callable[[Any], None]) -> Any:
+    """Schedule a repeating main-run-loop timer that services Python signals.
+
+    Lazily imports Foundation (macOS only) so this module stays importable on
+    non-macOS hosts and the timer creation can be monkeypatched in tests.
+    Returns the timer (so it can be invalidated on shutdown).
+    """
+    from Foundation import NSTimer
+
+    return NSTimer.scheduledTimerWithTimeInterval_repeats_block_(interval, True, callback)
+
+
+def _post_wakeup_event(app: Any) -> None:
+    """Post a no-op event so a pending ``app.stop_`` takes effect promptly.
+
+    ``NSApplication.stop_`` only ends the run loop when it is next checked
+    *between events*; if the loop is idle-waiting for input it may not notice
+    until some event arrives. Posting a dummy application-defined event at the
+    front of the queue guarantees the loop wakes and observes the stop. Best-
+    effort: never raise into shutdown.
+    """
+    try:
+        from AppKit import NSApplicationDefined, NSEvent
+        from Foundation import NSPoint
+
+        event = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(  # noqa: E501
+            NSApplicationDefined, NSPoint(0, 0), 0, 0.0, 0, None, 0, 0, 0
+        )
+        app.postEvent_atStart_(event, True)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not post wakeup event", exc_info=True)
 
 
 def _warm_input_source() -> None:
