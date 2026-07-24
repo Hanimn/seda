@@ -247,6 +247,12 @@ class AppController:
         except InvalidTransitionError:
             return
 
+        # Flip the HUD to its busy visual the INSTANT keys release — before
+        # recorder.stop() / silence-trim / worker pickup — so the post-release
+        # gap never reads as dead (spec: HUD responsive-wave + busy-visual).
+        # Reuses the existing BUSY event; OverlayNotifier maps it to busy mode.
+        self._notifier.notify(NotificationEvent.BUSY)
+
         try:
             audio = self._recorder.stop()
         except SedaError as exc:

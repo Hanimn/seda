@@ -27,6 +27,8 @@ import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from seda.notifications import HudMode
+
 if TYPE_CHECKING:
     from seda.app import AppController
 
@@ -47,6 +49,7 @@ class Overlay:
         show: Callable[[], None],
         hide: Callable[[], None],
         dispatch_main: Callable[[Callable[[], None]], None],
+        set_mode: Callable[[HudMode], None] | None = None,
         teardown: Callable[[], None] | None = None,
         _panel: Any,
         _view: Any,
@@ -55,6 +58,10 @@ class Overlay:
         self.show = show
         self.hide = hide
         self.dispatch_main = dispatch_main
+        # set_mode(HudMode.LISTENING|BUSY) switches the waveform view's draw mode
+        # on the main thread (ADR-0006). Defaults to a no-op for hand-built test
+        # overlays.
+        self.set_mode = set_mode if set_mode is not None else (lambda _mode: None)
         # Deterministic teardown: stop the redraw timer and order out + close the
         # panel so the HUD never lingers after the app exits (normal, signal, or
         # crash). Defaults to a no-op for hand-built test overlays.
@@ -101,6 +108,7 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
                 return None
             self._level = 0.0
             self._frame = 0  # advances each redraw, for subtle per-bar motion
+            self._mode = HudMode.LISTENING  # LISTENING (level bars) | BUSY (pulse)
             return self
 
         def needsPanelToBecomeKey(self) -> bool:  # noqa: N802 - never take keyboard focus
@@ -115,27 +123,54 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
             bounds = self.bounds()
             NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.55).set()
             NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, 8.0, 8.0).fill()
-            level = max(0.0, min(1.0, float(getattr(self, "_level", 0.0)) * 4.0))
             self._frame = getattr(self, "_frame", 0) + 1
-            phase = self._frame / 60.0  # seconds-ish, for the jitter animation
 
-            # Design: symmetric "mirror" EQ bars — each bar grows up AND down from
-            # the vertical center line. Center bars are weighted taller; a little
-            # per-bar jitter keeps it lively (mockup #2).
-            NSColor.whiteColor().colorWithAlphaComponent_(0.92).set()
+            # Shared bar geometry — identical in both modes so the listening →
+            # busy switch reads as one widget changing state, not a swap.
             width, gap = 6.0, 3.0
             cluster = _BARS * width + (_BARS - 1) * gap
             start_x = (bounds.size.width - cluster) / 2.0
             cy = bounds.size.height / 2.0
-            for i in range(_BARS):
-                # Triangular weight: 1.0 at center, tapering to ~0.35 at edges.
-                weight = 0.35 + 0.65 * (1.0 - abs(i - (_BARS - 1) / 2.0) / (_BARS / 2.0))
-                jitter = 0.7 + 0.3 * math.sin(phase * 9.0 + i)
-                half = max(2.0, (bounds.size.height * 0.42) * level * weight * jitter)
+            span = bounds.size.height * 0.42  # half-height at full amplitude
+
+            def _bar(i: int, half: float, alpha: float) -> None:
+                NSColor.whiteColor().colorWithAlphaComponent_(alpha).set()
                 x = start_x + i * (width + gap)
                 NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
                     NSMakeRect(x, cy - half, width, half * 2.0), width / 2.0, width / 2.0
                 ).fill()
+
+            if getattr(self, "_mode", HudMode.LISTENING) == HudMode.BUSY:
+                # Busy: a bright band sweeps L→R; each bar peaks as it passes,
+                # over a calm baseline so bars never fully vanish. Purely
+                # time-driven — no level input (the mic is stopped by now).
+                phase = self._frame / 60.0
+                speed = 3.2  # bars/sec the head travels
+                head = (phase * speed) % (_BARS + 3)  # +3 = gap between sweeps
+                for i in range(_BARS):
+                    d = i - head
+                    bump = math.exp(-(d * d) / 2.2)
+                    h = 0.18 + 0.62 * bump  # baseline + travelling swell
+                    _bar(i, max(2.0, span * h), 0.45 + 0.47 * bump)
+                return
+
+            # Listening: symmetric "mirror" EQ bars driven by the mic level.
+            # Perceptual mapping (spec Part 1): a noise-floor gate + sqrt expand
+            # the low end so quiet speech visibly moves the bars; raw/instant,
+            # no smoothing. GATE/GAIN are tune-by-eye knobs.
+            _GATE = 0.006
+            _GAIN = 2.6
+            rms = float(getattr(self, "_level", 0.0))
+            level = max(0.0, min(1.0, math.sqrt(max(0.0, rms - _GATE)) * _GAIN))
+            phase = self._frame / 60.0  # seconds-ish, for the jitter animation
+            for i in range(_BARS):
+                # Triangular weight: 1.0 at center, tapering to ~0.35 at edges.
+                weight = 0.35 + 0.65 * (1.0 - abs(i - (_BARS - 1) / 2.0) / (_BARS / 2.0))
+                # Jitter amplitude scales with level so it vanishes at silence —
+                # a resting HUD is flat and still, not a shimmering floor.
+                jitter = 1.0 + 0.3 * level * math.sin(phase * 9.0 + i)
+                half = max(2.0, span * level * weight * jitter)
+                _bar(i, half, 0.92)
 
     class OverlayPanel(NSPanel):  # type: ignore[misc]
         def canBecomeKeyWindow(self) -> bool:  # noqa: N802 - never steal key
@@ -204,6 +239,13 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
             timer_holder["timer"] = None
         panel.orderOut_(None)
 
+    def _set_mode(mode: HudMode) -> None:
+        # Switch the waveform view's draw mode and force an immediate redraw.
+        # Runs on the main thread (OverlayNotifier marshals it), same as the
+        # redraw timer, so there is no cross-thread access to view state.
+        view._mode = mode
+        view.setNeedsDisplay_(True)
+
     def _teardown() -> None:
         # Deterministic teardown so the HUD never lingers after the app exits.
         # Stop the redraw timer, then order out AND close the panel — closing
@@ -235,6 +277,7 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
         show=_show,
         hide=_hide,
         dispatch_main=_dispatch_main,
+        set_mode=_set_mode,
         teardown=_teardown,
         _panel=panel,
         _view=view,
