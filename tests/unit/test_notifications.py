@@ -7,6 +7,7 @@ import io
 from seda.notifications import (
     ConsoleNotifier,
     FanOutNotifier,
+    HudMode,
     NotificationEvent,
     OverlayNotifier,
 )
@@ -134,17 +135,54 @@ class TestOverlayNotifier:
     def _make(self) -> tuple[OverlayNotifier, list[str]]:
         calls: list[str] = []
         # dispatch_main runs the callable synchronously (assert the effect).
+        # set_mode records "mode:<name>" so ordering vs show/hide is assertable.
         n = OverlayNotifier(
             show=lambda: calls.append("show"),
             hide=lambda: calls.append("hide"),
+            set_mode=lambda mode: calls.append(f"mode:{mode}"),
             dispatch_main=lambda fn: fn(),
         )
         return n, calls
 
-    def test_recording_shows(self) -> None:
+    def test_recording_shows_in_listening_mode(self) -> None:
         n, calls = self._make()
         n.notify(NotificationEvent.RECORDING)
-        assert calls == ["show"]
+        assert calls == ["show", "mode:listening"]
+
+    def test_busy_shows_in_busy_mode(self) -> None:
+        n, calls = self._make()
+        n.notify(NotificationEvent.BUSY)
+        # BUSY shows defensively (in case a RECORDING was missed) and sets busy.
+        assert calls == ["show", "mode:busy"]
+
+    def test_set_mode_receives_a_hudmode_enum_not_a_bare_string(self) -> None:
+        modes: list[object] = []
+        n = OverlayNotifier(
+            show=lambda: None,
+            hide=lambda: None,
+            set_mode=modes.append,
+            dispatch_main=lambda fn: fn(),
+        )
+        n.notify(NotificationEvent.RECORDING)
+        n.notify(NotificationEvent.BUSY)
+        assert modes == [HudMode.LISTENING, HudMode.BUSY]
+        assert all(isinstance(m, HudMode) for m in modes)
+
+    def test_recording_then_busy_switches_mode_without_rehiding(self) -> None:
+        n, calls = self._make()
+        n.notify(NotificationEvent.RECORDING)
+        n.notify(NotificationEvent.BUSY)
+        # Already visible after RECORDING → BUSY must NOT re-show, only set mode.
+        assert calls == ["show", "mode:listening", "mode:busy"]
+
+    def test_busy_persists_through_transcribing_until_terminal(self) -> None:
+        n, calls = self._make()
+        n.notify(NotificationEvent.RECORDING)
+        n.notify(NotificationEvent.BUSY)
+        # TRANSCRIBING must not change visibility or mode (busy is already set).
+        n.notify(NotificationEvent.TRANSCRIBING)
+        n.notify(NotificationEvent.SUCCESS)
+        assert calls == ["show", "mode:listening", "mode:busy", "hide"]
 
     def test_terminal_events_hide(self) -> None:
         for terminal in (
@@ -155,23 +193,30 @@ class TestOverlayNotifier:
             n, calls = self._make()
             n.notify(NotificationEvent.RECORDING)
             n.notify(terminal)
-            assert calls == ["show", "hide"], terminal
+            assert calls == ["show", "mode:listening", "hide"], terminal
 
-    def test_non_show_hide_events_ignored(self) -> None:
+    def test_ready_and_transcribing_are_ignored(self) -> None:
         n, calls = self._make()
         for ignored in (
             NotificationEvent.READY,
-            NotificationEvent.BUSY,
             NotificationEvent.TRANSCRIBING,
         ):
             n.notify(ignored)
         assert calls == []
 
-    def test_show_is_idempotent(self) -> None:
+    def test_show_is_idempotent_but_mode_reasserts(self) -> None:
         n, calls = self._make()
         n.notify(NotificationEvent.RECORDING)
         n.notify(NotificationEvent.RECORDING)
-        assert calls == ["show"], "double show should be a no-op"
+        # Double show collapses to one; the listening mode is set each time
+        # (cheap + idempotent — re-setting the same mode just redraws).
+        assert calls == ["show", "mode:listening", "mode:listening"]
+
+    def test_busy_reassert_while_busy_does_not_reshow(self) -> None:
+        n, calls = self._make()
+        n.notify(NotificationEvent.BUSY)
+        n.notify(NotificationEvent.BUSY)  # e.g. press-while-busy nudge
+        assert calls == ["show", "mode:busy", "mode:busy"]
 
     def test_hide_is_idempotent(self) -> None:
         n, calls = self._make()
@@ -182,30 +227,55 @@ class TestOverlayNotifier:
         n.notify(NotificationEvent.RECORDING)
         n.notify(NotificationEvent.SUCCESS)
         n.notify(NotificationEvent.ERROR)
-        assert calls == ["show", "hide"]
+        assert calls == ["show", "mode:listening", "hide"]
 
-    def test_show_hide_are_marshalled_through_dispatch_main(self) -> None:
+    def test_show_hide_and_mode_are_marshalled_through_dispatch_main(self) -> None:
         dispatched: list[object] = []
         n = OverlayNotifier(
             show=lambda: None,
             hide=lambda: None,
+            set_mode=lambda _mode: None,
             dispatch_main=lambda fn: dispatched.append(fn),
         )
         n.notify(NotificationEvent.RECORDING)
-        # The show was routed through dispatch_main, not called inline.
+        # show + set_mode are batched into ONE main-thread dispatch (atomic — no
+        # flicker between showing the panel and setting its mode), not called
+        # inline and not split across two run-loop turns.
         assert len(dispatched) == 1
 
     def test_show_failure_is_swallowed(self) -> None:
         def _boom() -> None:
             raise RuntimeError("panel exploded")
 
-        n = OverlayNotifier(show=_boom, hide=lambda: None, dispatch_main=lambda fn: fn())
+        n = OverlayNotifier(
+            show=_boom,
+            hide=lambda: None,
+            set_mode=lambda _mode: None,
+            dispatch_main=lambda fn: fn(),
+        )
         # Must not propagate — fail-open.
         n.notify(NotificationEvent.RECORDING)
+
+    def test_set_mode_failure_is_swallowed(self) -> None:
+        def _boom(_mode: str) -> None:
+            raise RuntimeError("mode exploded")
+
+        n = OverlayNotifier(
+            show=lambda: None,
+            hide=lambda: None,
+            set_mode=_boom,
+            dispatch_main=lambda fn: fn(),
+        )
+        n.notify(NotificationEvent.RECORDING)  # must not raise
 
     def test_dispatch_failure_is_swallowed(self) -> None:
         def _bad_dispatch(_fn: object) -> None:
             raise RuntimeError("dispatch exploded")
 
-        n = OverlayNotifier(show=lambda: None, hide=lambda: None, dispatch_main=_bad_dispatch)
+        n = OverlayNotifier(
+            show=lambda: None,
+            hide=lambda: None,
+            set_mode=lambda _mode: None,
+            dispatch_main=_bad_dispatch,
+        )
         n.notify(NotificationEvent.RECORDING)  # must not raise

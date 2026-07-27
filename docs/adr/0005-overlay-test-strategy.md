@@ -52,6 +52,9 @@ The unit tests stub the shims and assert the *logic around* AppKit:
   `READY`/`BUSY`/`TRANSCRIBING`; **idempotent** double-show / double-hide are no-ops; show/hide
   are routed through a **fake `_dispatch_main`** (assert it was invoked — the listener/worker →
   main marshalling), so no real thread hop is needed.
+  <!-- Superseded in part by ADR-0006: BUSY is no longer ignored — it maps to
+       show + set_mode(BUSY). See ADR-0006 "Test obligations" for the updated
+       OverlayNotifier assertions (mode switching, batched dispatch). -->
 - **ADR-0004 (config + gating):** `select_overlay_enabled` truth table — `--no-overlay` wins;
   explicit config `true`/`false` wins on every platform; `None` → macOS-on / others-off (with
   an **injected `platform`**, per the `select_push_to_talk` idiom); and a simulated AppKit

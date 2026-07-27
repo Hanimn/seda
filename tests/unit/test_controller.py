@@ -686,3 +686,41 @@ class TestNotifierInjection:
 
         ctrl, _, _ = _make_controller()
         assert isinstance(ctrl._notifier, ConsoleNotifier)
+
+    def test_busy_fires_on_release_before_transcribing(self) -> None:
+        """Releasing keys emits BUSY, ahead of TRANSCRIBING, so the HUD flips to
+        its busy visual immediately (spec: HUD responsive-wave + busy-visual)."""
+        from seda.notifications import NotificationEvent
+
+        recorded: list[NotificationEvent] = []
+
+        class _RecordingNotifier:
+            def notify(self, event: NotificationEvent, **kwargs: object) -> None:
+                recorded.append(event)
+
+        cfg = Config()
+        hotkeys = FakeHotkeyProvider()
+        ctrl = AppController(
+            cfg,
+            hotkey_provider=hotkeys,
+            backend=FakeBackend(),
+            text_inserter=_RecordingInserter(),
+            notifier=_RecordingNotifier(),  # type: ignore[arg-type]
+        )
+        ctrl._recorder = _FakeRecorder()
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+
+            assert NotificationEvent.BUSY in recorded, "release must emit BUSY"
+            # BUSY (on release) must come before TRANSCRIBING (worker pickup).
+            assert recorded.index(NotificationEvent.BUSY) < recorded.index(
+                NotificationEvent.TRANSCRIBING
+            )
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)

@@ -266,12 +266,14 @@ def run(
         else:
 
             def _register(overlay: Overlay) -> None:
-                # Wire the built panel's show/hide into the fan-out (ADR-0003):
-                # RECORDING -> show, terminal -> hide, marshalled onto main.
+                # Wire the built panel into the fan-out (ADR-0003): RECORDING ->
+                # show + listening mode, BUSY -> show + busy mode (fired on
+                # release), terminal -> hide, all marshalled onto the main thread.
                 notifier.add(
                     OverlayNotifier(
                         show=overlay.show,
                         hide=overlay.hide,
+                        set_mode=overlay.set_mode,
                         dispatch_main=overlay.dispatch_main,
                     )
                 )

@@ -1,6 +1,6 @@
 # ADR-0003 — A `Notifier` Protocol + fan-out drives the overlay show/hide
 
-- **Status:** Accepted
+- **Status:** Accepted (partially superseded by [ADR-0006](0006-overlay-busy-mode-on-release.md))
 - **Date:** 2026-07-17
 - **Deciders:** grilling session (Hani Momeninia + agent)
 - **Issue:** [#20 — Notifier seam for overlay show/hide lifecycle](https://github.com/Hanimn/seda/issues/20)
@@ -75,6 +75,10 @@ class OverlayNotifier:            # satisfies the Notifier Protocol
   #17). The actual `orderFrontRegardless()` / `orderOut_` runs on main.
 - `READY`, `BUSY`, `TRANSCRIBING` are **not** show/hide events — the overlay ignores them.
   (Per #15 this is a RECORDING-only HUD: no processing/spinner state.)
+  > **Superseded by [ADR-0006](0006-overlay-busy-mode-on-release.md):** the overlay is no
+  > longer RECORDING-only. It now consumes `BUSY` (fired on key-release) to switch to a `busy`
+  > visual mode via `set_mode`. `READY`/`TRANSCRIBING` are still ignored; the rest of this ADR
+  > (Protocol, fan-out, marshalling, idempotency, fail-open) is unchanged.
 
 ### 3. Idempotency + race safety
 
