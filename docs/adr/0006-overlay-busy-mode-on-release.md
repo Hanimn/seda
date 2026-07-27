@@ -1,6 +1,6 @@
 # ADR-0006 — The overlay gains a `busy` mode driven by `BUSY` on release
 
-- **Status:** Accepted
+- **Status:** Accepted (partially superseded by [ADR-0007](0007-persistent-hud-lifecycle.md))
 - **Date:** 2026-07-24
 - **Deciders:** wayfinder + implement session (Hani Momeninia + agent)
 - **Spec:** [`docs/specs/hud-responsive-wave-and-busy-visual.md`](../specs/hud-responsive-wave-and-busy-visual.md)
@@ -27,6 +27,11 @@ switch between them, still entirely off the existing notification stream (ADR-00
 reused, not replaced).
 
 ### 1. A `HudMode` vocabulary
+
+> **Superseded in part by [ADR-0007](0007-persistent-hud-lifecycle.md):** the persistent-companion
+> lifecycle adds a third `HudMode` member, `IDLE` (the compressed at-rest look). This two-member
+> enum and the event→mode mapping table in §2 below are amended there; the `BUSY`-on-release
+> timing, main-thread marshalling, and fail-open discipline stand unchanged.
 
 `notifications` gains a `HudMode(StrEnum)` — `LISTENING` (live mic-level EQ bars) and `BUSY`
 (a time-driven "working" pulse). It lives beside `NotificationEvent` because the
