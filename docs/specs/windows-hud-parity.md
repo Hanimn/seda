@@ -127,3 +127,9 @@ Three tiers, mirroring the macOS strategy:
 
 - **Carried from macOS** (contract-level, not Windows-specific): no distinct `ERROR` beat; no HUD during model load. (ADR-0007 §2.)
 - **Only if the spike [#66](https://github.com/Hanimn/seda/issues/66) fails and we fall back to Option A:** flattened card-vs-bar contrast (one whole-window alpha) and 1-bit aliased corners. Documented in ADR-0010; not accepted unless the spike forces it.
+
+## Fail-open
+
+The exhaustive Win32/GDI+ failure-mode catalog — every mode, the layer that catches it, and its
+degradation to the terminal path — is the companion spec [`windows-hud-fail-open.md`](windows-hud-fail-open.md)
+(ticket [#64](https://github.com/Hanimn/seda/issues/64)).
