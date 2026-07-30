@@ -53,8 +53,11 @@ entry — "Candidate A"), or **independent sibling hosts** sharing only the `Not
 1. **Fail-open** to today's exact terminal behavior must be preserved **identically** on both
    platforms (epic #15; the #37/#38 no-lingering-HUD fix).
 2. **Zero new dependencies** — AppKit is a macOS-only optional import; Win32 is stdlib `ctypes`.
-3. **Both platforms stay fakeable** via the `build=` / `platform=` module-level-shim injection
-   ADR-0005 §1 fixed as the load-bearing testability decision.
+3. **Both platforms stay fakeable.** `run_with_overlay` already takes injectable `build=` /
+   `platform=` seams (`host.py`), and ADR-0005 §1 fixed the deeper testability decision — every
+   AppKit call sits behind a **module-level shim** monkeypatched in unit tests, so CI never
+   imports AppKit. Whatever boundary we pick must preserve both: the per-host `build=`/`platform=`
+   injection *and* the module-level-shim isolation.
 4. **Linux is out of scope** for this effort — a separate, later map (#39 "Out of scope").
 
 ## Decision
@@ -180,9 +183,14 @@ constructor pins (§1, seam #1) — that four-callable contract is the only cros
 **Negative / costs accepted**
 
 - **No compiler-enforced capability conformance across hosts** — nothing type-errors a Windows
-  host that forgets to implement `set_mode`. Mitigated by: a **parametrized conformance test**
-  over both host modules, a structural `inspect.signature` check against the `OverlayNotifier`
-  constructor, and the rule that the constructor signature *is* the contract (§1).
+  host that forgets to implement `set_mode`. This gap has teeth: the shipped `Overlay`
+  (`host.py`) makes `set_mode`/`teardown` **optional with no-op defaults**, so a host that omits
+  `set_mode` still constructs a valid `Overlay` — an `inspect.signature`/attribute check would
+  pass **vacuously** while the HUD silently never switches to BUSY. Mitigated therefore by a
+  **parametrized conformance test** over both host modules asserting the four callables are
+  **callable-and-effectful** (not merely present), plus the rule that the `OverlayNotifier`
+  constructor signature *is* the contract (§1). A pure `inspect.signature` check is explicitly
+  **not** sufficient, for the no-op-default reason above.
 - `_register` in `cli.run()` grows if the `OverlayNotifier` capability set grows — accepted
   while the set is small and stable.
 - One new concept (`gui/_hostloop.py`) over pure-B. Accepted deliberately: the invariant it owns
@@ -229,7 +237,9 @@ bug. Hence the `_hostloop` helper (§2).
 - The macOS `run_with_overlay` refactor to a `run_hosted` adapter must be **behavior-preserving**
   — its existing ADR-0005 unit tests are the regression net; they should pass unchanged.
 - The parametrized conformance test should assert, for each entry in `_HOST_MODULES`, that the
-  module exposes the `run_with_overlay`-shaped entry and that its built `Overlay` satisfies the
-  `OverlayNotifier` four-callable contract — the structural stand-in for A's compiler check.
+  module exposes the `run_with_overlay`-shaped entry and that its built `Overlay`'s four callables
+  are **callable-and-effectful** (invoke each against a fake and observe the effect) — *not* a
+  mere `inspect.signature` check, which the no-op defaults make vacuous (see Consequences). This
+  is the structural stand-in for A's compiler check.
 - `gui/host_win.py` lifts the pump/signal/teardown structure ADR-0008 already fixed (and the #41
   prototype validated) into its `run_loop`; `_hostloop` owns only the gate + fail-open + `-> bool`.
