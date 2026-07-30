@@ -1,6 +1,6 @@
 # ADR-0007 — The overlay becomes a persistent companion, removed only on close
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-07-30 — §5 adds the shared redraw-cadence policy, while specifying the Windows HUD #63)
 - **Date:** 2026-07-27
 - **Deciders:** wayfinder grilling session (Hani Momeninia + agent)
 - **Map:** [#50 — HUD map: persistent companion (idle→listening→busy), removed only on close (macOS)](https://github.com/Hanimn/seda/issues/50)
@@ -117,6 +117,41 @@ after the first is therefore **pure flicker-free mode flips on the same continuo
 panel** — `IDLE → LISTENING → BUSY → IDLE`, no `orderOut_`/`orderFront` ever — extending
 ADR-0006's flicker-free `LISTENING → BUSY` guarantee across the whole cycle.
 
+### 5. Redraw cadence is a **shared cross-platform policy**: ~60 Hz active, throttled at rest
+
+> **Amendment — 2026-07-30 (added while specifying the Windows HUD, #63).** ADR-0006 §3 and
+> the shipped macOS host run the redraw timer at a flat **60 Hz while the panel is visible**,
+> started on `show` and stopped on `hide`. Making the HUD *persistent* (this ADR) deletes the
+> hide, so "60 Hz only while visible" now means **60 Hz for the entire session** — including the
+> long stretches the HUD rests in `IDLE`. A time-driven 60 Hz redraw of a static-ish idle pill
+> is wasted CPU on both platforms. The Windows spec (#63) surfaced this, but the cadence is a
+> **behavior of the persistent-companion contract, not of any one toolkit**, so it is recorded
+> here — the contract's home — and **both hosts must adopt it identically.** Neither host may
+> pick its own idle rate; a per-platform rate would make idle CPU and the `IDLE` shimmer cadence
+> silently diverge across macOS and Windows.
+
+**The cadence:** the redraw runs at the **active rate (~60 Hz)** whenever the current `HudMode`
+is `LISTENING` or `BUSY` (both are motion-carrying — live level bars, the travelling sweep), and
+drops to an **idle rate (~10 Hz)** in `IDLE`. `IDLE` is not fully static — #56's compressed pill
+carries a "faint slow shimmer" — so the timer does not stop; ~10 Hz is ample for a slow shimmer
+and cuts idle wakeups ~6×. Entering/leaving `IDLE` (i.e. every `set_mode`) re-arms the timer at
+the mode's rate: on macOS by re-scheduling the `NSTimer`, on Windows by resetting the `SetTimer`
+interval. The exact rates are tune-by-eye knobs (like ADR-0006's GATE/GAIN), but they are **one
+pair of knobs shared by both hosts**, not two.
+
+This is the one place the persistent-companion behavior was left implicit by ADRs 0006–0007 as
+originally written; pinning it here keeps the two hosts from diverging as each implements.
+
+**Rejected — leave the redraw at flat 60 Hz forever (simplest).** A persistent HUD then burns
+60 wakeups/sec for its entire uptime to animate a nearly-static idle pill — a real, avoidable
+idle-CPU cost on a tool meant to sit resident all day. The throttle is a few lines per host and
+removes it.
+
+**Rejected — stop the timer entirely in `IDLE`.** Kills idle CPU completely, but freezes the
+pill's shimmer and requires a guaranteed re-arm on the next `set_mode` (a missed re-arm leaves a
+dead HUD). A slow ~10 Hz tick keeps the shimmer alive and keeps the timer a single always-running
+object, simpler to reason about than a stop/restart dance.
+
 **Rejected — `READY`-only show (mode events pure `set_mode`).** Cleaner in theory, but a missed
 `READY` show would leave the HUD invisible for the entire session with no recovery. The
 idempotent self-heal costs nothing and removes that failure mode.
@@ -165,6 +200,11 @@ To be discharged by the implement pass, not this ticket:
 - No `NotificationEvent` maps to `hide`; the panel leaves the screen only via `Overlay.teardown`.
 - The `IDLE` visual and mode transitions are **verified by eye** running Seda locally
   (consistent with ADR-0005's "no AppKit in unit tests" boundary and #56's prototype).
+- **(§5 amendment)** The redraw runs at the active rate in `LISTENING`/`BUSY` and the idle rate
+  in `IDLE`, re-armed on every `set_mode`; the **same rate pair is used on both hosts**. The
+  rates themselves are verified by eye (idle-CPU sanity + shimmer smoothness); a unit test can
+  assert the *mechanism* — `set_mode(IDLE)` selects the idle interval, `set_mode(LISTENING/BUSY)`
+  the active interval — against a fake timer, no toolkit needed.
 
 ## Out of scope / deferred (recorded so they are not lost)
 
