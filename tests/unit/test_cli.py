@@ -22,6 +22,18 @@ WavFactory = Callable[..., Path]
 runner = CliRunner()
 
 
+def _force_macos_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``cli.run``'s platform to ``darwin`` so it dispatches to ``seda.gui.host``.
+
+    The host is selected by ``sys.platform`` via ``_HOST_MODULES`` (ADR-0009 §3),
+    so tests that monkeypatch ``seda.gui.host.run_with_overlay`` must force the
+    darwin branch to be selected — otherwise they pass vacuously on a Linux/Windows
+    CI runner (which would resolve to no host / ``host_win``) and never exercise the
+    patched macOS host.
+    """
+    monkeypatch.setattr("seda.cli.sys.platform", "darwin")
+
+
 @pytest.fixture(autouse=True)
 def _silence_migration_notice(monkeypatch: pytest.MonkeyPatch) -> None:
     """Neutralize the config migration notice by default.
@@ -392,6 +404,7 @@ def test_run_falls_back_to_blocking_run_when_overlay_declines(
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
     # Overlay declines (non-macOS / unavailable / stub) → fallback path taken.
+    _force_macos_host(monkeypatch)
     monkeypatch.setattr(host_module, "run_with_overlay", lambda controller, **kw: False)
     cfg = tmp_path / "config.toml"
     # Request the overlay explicitly so the host is attempted on any platform
@@ -431,6 +444,7 @@ def test_run_propagates_when_overlay_host_raises_after_committing(
         raise RuntimeError("host blew up after committing")
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
+    _force_macos_host(monkeypatch)
     monkeypatch.setattr(host_module, "run_with_overlay", _boom)
     cfg = tmp_path / "config.toml"
     cfg.write_text(
@@ -460,6 +474,7 @@ def test_run_does_not_call_blocking_run_when_overlay_hosts(
             ran.append("run")
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
+    _force_macos_host(monkeypatch)
     monkeypatch.setattr(host_module, "run_with_overlay", lambda controller, **kw: True)
     cfg = tmp_path / "config.toml"
     cfg.write_text(
@@ -469,6 +484,91 @@ def test_run_does_not_call_blocking_run_when_overlay_hosts(
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code == 0
     assert ran == [], "controller.run() must be skipped when the overlay host owns the loop"
+
+
+def test_select_host_module_maps_known_platforms_and_none_otherwise() -> None:
+    """`_select_host_module` maps darwin/win32 to their hosts; unknown → None (ADR-0009 §3)."""
+    from seda.cli import _select_host_module
+
+    assert _select_host_module("darwin") == "seda.gui.host"
+    assert _select_host_module("win32") == "seda.gui.host_win"
+    assert _select_host_module("linux") is None
+    assert _select_host_module("") is None
+
+
+def test_run_unknown_platform_runs_controller_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A platform with no host entry runs the terminal path — the host is never imported (A2).
+
+    Even with the overlay explicitly requested, an unsupported platform must fall
+    straight through to ``controller.run()`` and must not attempt any host import.
+    """
+    import seda.app as app_module
+
+    ran: list[str] = []
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            ran.append("run")
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    # A platform absent from _HOST_MODULES.
+    monkeypatch.setattr("seda.cli.sys.platform", "linux")
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[transcription]\nbackend = "fake"\n[overlay]\nenabled = true\n', encoding="utf-8"
+    )
+
+    result = runner.invoke(app, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert ran == ["run"], "an unsupported platform must run the controller's terminal loop"
+
+
+def test_run_host_import_error_runs_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host module that fails to import degrades to the terminal path (B1).
+
+    Simulates a broken/absent optional host (e.g. a PyObjC install failure, or the
+    Windows host on a box missing a dependency): the ImportError is caught and the
+    controller's own blocking loop runs, exactly as today.
+    """
+    import importlib
+
+    import seda.app as app_module
+
+    ran: list[str] = []
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            ran.append("run")
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+    _force_macos_host(monkeypatch)
+
+    real_import_module = importlib.import_module
+
+    def _failing_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "seda.gui.host":
+            raise ImportError("simulated broken host module")
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", _failing_import)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[transcription]\nbackend = "fake"\n[overlay]\nenabled = true\n', encoding="utf-8"
+    )
+
+    result = runner.invoke(app, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0
+    assert ran == ["run"], "a host ImportError must degrade to the terminal path"
 
 
 # --- transcribe (Phase 1) ---------------------------------------------------
