@@ -62,7 +62,7 @@ def test_win_ctypes_prototypes_declared() -> None:
     """G1: build a real layered window and run the full lifecycle without raising.
 
     Exercises the real ``ctypes`` boundary end-to-end (build → show → set_mode ×
-    both live modes → teardown). A truncated HWND or a mis-declared prototype
+    all three modes → teardown). A truncated HWND or a mis-declared prototype
     faults somewhere in this sequence; a clean pass is the truncation backstop the
     fail-open catalog promises (§4).
     """
@@ -71,6 +71,7 @@ def test_win_ctypes_prototypes_declared() -> None:
     overlay = build_overlay(lambda: 0.3)  # real GdiplusStartup + CreateWindowExW + DIB + GDI+
     try:
         overlay.show()
+        overlay.set_mode(HudMode.IDLE)  # idle pill + throttled timer re-arm
         overlay.set_mode(HudMode.LISTENING)  # re-arms the timer, mutates state
         overlay.set_mode(HudMode.BUSY)
         # Drive one real redraw tick (paint into the DIB + UpdateLayeredWindow) so

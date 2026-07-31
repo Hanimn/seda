@@ -26,7 +26,17 @@ import signal
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from seda.notifications import HudMode
+from seda.notifications import (
+    HUD_ACTIVE_PANEL_H,
+    HUD_ACTIVE_PANEL_W,
+    HUD_IDLE_PANEL_H,
+    HUD_IDLE_PANEL_W,
+    HUD_IDLE_PILL_H,
+    HUD_IDLE_PILL_W,
+    HudMode,
+    hud_idle_shimmer,
+    hud_redraw_hz,
+)
 
 if TYPE_CHECKING:
     from seda.app import AppController
@@ -57,9 +67,10 @@ class Overlay:
         self.show = show
         self.hide = hide
         self.dispatch_main = dispatch_main
-        # set_mode(HudMode.LISTENING|BUSY) switches the waveform view's draw mode
-        # on the main thread (ADR-0006). Defaults to a no-op for hand-built test
-        # overlays.
+        # set_mode(HudMode.IDLE|LISTENING|BUSY) switches the waveform view's draw
+        # mode, resizes/recenters the panel, and re-arms the redraw timer at the
+        # mode's rate, on the main thread (ADR-0006/ADR-0007). Defaults to a no-op
+        # for hand-built test overlays.
         self.set_mode = set_mode if set_mode is not None else (lambda _mode: None)
         # Deterministic teardown: stop the redraw timer and order out + close the
         # panel so the HUD never lingers after the app exits (normal, signal, or
@@ -107,7 +118,9 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
                 return None
             self._level = 0.0
             self._frame = 0  # advances each redraw, for subtle per-bar motion
-            self._mode = HudMode.LISTENING  # LISTENING (level bars) | BUSY (pulse)
+            # Startup mode is IDLE — the persistent HUD shows at rest on READY
+            # before any RECORDING (ADR-0007 §2). IDLE | LISTENING | BUSY.
+            self._mode = HudMode.IDLE
             return self
 
         def needsPanelToBecomeKey(self) -> bool:  # noqa: N802 - never take keyboard focus
@@ -139,7 +152,26 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
                     NSMakeRect(x, cy - half, width, half * 2.0), width / 2.0, width / 2.0
                 ).fill()
 
-            if getattr(self, "_mode", HudMode.LISTENING) == HudMode.BUSY:
+            mode = getattr(self, "_mode", HudMode.IDLE)
+
+            if mode == HudMode.IDLE:
+                # Idle: a single compressed pill with a faint slow alpha breath
+                # (the #56 winner). Keeps the bar cluster's horizontal silhouette
+                # compressed to one element, so waking reads as the same widget
+                # widening back into the 9 bars. Shimmer is a shared knob (ADR-0007
+                # §5) so macOS + Windows breathe identically.
+                alpha = hud_idle_shimmer(self._frame, HudMode.IDLE)
+                NSColor.whiteColor().colorWithAlphaComponent_(alpha).set()
+                pill_w, pill_h = float(HUD_IDLE_PILL_W), float(HUD_IDLE_PILL_H)
+                cx = bounds.size.width / 2.0
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(cx - pill_w / 2.0, cy - pill_h / 2.0, pill_w, pill_h),
+                    pill_h / 2.0,
+                    pill_h / 2.0,
+                ).fill()
+                return
+
+            if mode == HudMode.BUSY:
                 # Busy: a bright band sweeps L→R; each bar peaks as it passes,
                 # over a calm baseline so bars never fully vanish. Purely
                 # time-driven — no level input (the mic is stopped by now).
@@ -216,9 +248,28 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
     view.setWantsLayer_(True)
     panel.setContentView_(view)
 
-    # The redraw timer lives in a holder so show()/hide() can start/stop it; it
-    # only runs while the panel is visible (no idle 60 Hz churn).
+    # The redraw timer lives in a holder so show()/set_mode() can (re)arm it. The
+    # HUD is persistent (ADR-0007), so the timer runs the whole session; its RATE
+    # is throttled to ~10 Hz in IDLE and ~60 Hz in LISTENING/BUSY (ADR-0007 §5 —
+    # a shared cross-platform policy) rather than started/stopped on show/hide.
     timer_holder: dict[str, Any] = {"timer": None}
+    # The active panel's center stays fixed as it grows/shrinks (persistent-
+    # companion spec): remember it so _set_mode can recenter the shrunk chip.
+    _center_x = screen.size.width / 2.0
+    _active_bottom_y = 80.0  # the active panel's y-origin (bottom-centre)
+
+    def _interval_for(mode: HudMode) -> float:
+        # One shared rate policy (ADR-0007 §5): seconds-per-frame from the shared Hz.
+        return 1.0 / hud_redraw_hz(mode)
+
+    def _arm_timer(mode: HudMode) -> None:
+        # Invalidate any existing timer, then (re)schedule at the mode's rate.
+        timer = timer_holder["timer"]
+        if timer is not None:
+            timer.invalidate()
+        timer_holder["timer"] = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            _interval_for(mode), True, _tick
+        )
 
     def _tick(_timer: Any) -> None:
         view._level = level_source()
@@ -227,9 +278,8 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
     def _show() -> None:
         panel.orderFrontRegardless()  # NOT makeKeyAndOrderFront_ / NSApp.activate
         if timer_holder["timer"] is None:
-            timer_holder["timer"] = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                1.0 / 60.0, True, _tick
-            )
+            # Seed at the startup mode's rate (IDLE); set_mode re-arms on each flip.
+            _arm_timer(view._mode)
 
     def _hide() -> None:
         timer = timer_holder["timer"]
@@ -239,10 +289,22 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
         panel.orderOut_(None)
 
     def _set_mode(mode: HudMode) -> None:
-        # Switch the waveform view's draw mode and force an immediate redraw.
-        # Runs on the main thread (OverlayNotifier marshals it), same as the
-        # redraw timer, so there is no cross-thread access to view state.
+        # Persistent-HUD mode flip (ADR-0007): switch the draw mode, resize +
+        # recenter the panel for the idle/active footprint, re-arm the redraw timer
+        # at the mode's rate (§5), and force an immediate redraw. Runs on the main
+        # thread (OverlayNotifier marshals it), same as the timer — no cross-thread
+        # access to view/panel state.
         view._mode = mode
+        if mode is HudMode.IDLE:
+            new_w, new_h = float(HUD_IDLE_PANEL_W), float(HUD_IDLE_PANEL_H)
+        else:
+            new_w, new_h = float(HUD_ACTIVE_PANEL_W), float(HUD_ACTIVE_PANEL_H)
+        # Recenter on the fixed active-panel center (x) and its vertical midline (y).
+        new_x = _center_x - new_w / 2.0
+        new_y = _active_bottom_y + (float(HUD_ACTIVE_PANEL_H) - new_h) / 2.0
+        panel.setFrame_display_(NSMakeRect(new_x, new_y, new_w, new_h), True)
+        view.setFrame_(NSMakeRect(0.0, 0.0, new_w, new_h))
+        _arm_timer(mode)
         view.setNeedsDisplay_(True)
 
     def _teardown() -> None:

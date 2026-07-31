@@ -8,6 +8,7 @@ never transcript text, clipboard contents, or secrets.
 from __future__ import annotations
 
 import logging
+import math
 import sys
 from collections.abc import Callable, Sequence
 from enum import StrEnum
@@ -29,16 +30,78 @@ class NotificationEvent(StrEnum):
 
 
 class HudMode(StrEnum):
-    """The overlay's visual mode (ADR-0006).
+    """The overlay's visual mode (ADR-0006 §1, extended by ADR-0007 §1).
 
-    ``LISTENING`` draws the live mic-level EQ bars; ``BUSY`` draws the
-    time-driven "working" pulse shown after key-release. Crossing the
-    :class:`OverlayNotifier` seam as a small enum (not a bare string) mirrors
-    :class:`NotificationEvent` house style and lets the type checker catch typos.
+    ``IDLE`` draws the compressed at-rest pill (the sustained resting look while
+    the app is up but not dictating); ``LISTENING`` draws the live mic-level EQ
+    bars; ``BUSY`` draws the time-driven "working" pulse shown after key-release.
+    Crossing the :class:`OverlayNotifier` seam as a small enum (not a bare string)
+    mirrors :class:`NotificationEvent` house style and lets the type checker catch
+    typos.
     """
 
+    IDLE = "idle"
     LISTENING = "listening"
     BUSY = "busy"
+
+
+# ---------------------------------------------------------------------------
+# Shared HUD knobs (ADR-0007 §5). These are ONE pair/family shared by BOTH the
+# macOS (``gui/host.py``) and Windows (``gui/host_win.py``) hosts — a per-platform
+# copy would let the idle CPU rate and the IDLE shimmer cadence silently diverge,
+# which §5 forbids. Both hosts import from here; neither hardcodes its own.
+# ---------------------------------------------------------------------------
+
+# Redraw cadence: ~60 Hz while a motion-carrying mode is active (LISTENING/BUSY),
+# throttled to ~10 Hz in IDLE (a slow shimmer needs no more), cutting idle wakeups
+# ~6×. Re-armed on every ``set_mode``. Tune-by-eye, but one shared pair.
+HUD_ACTIVE_HZ = 60
+HUD_IDLE_HZ = 10
+
+# IDLE compressed-pill visual (the #56 prototype winner, verified by eye on
+# ``proto/idle-visual``): a short horizontal capsule with a faint slow alpha
+# breath — floor well above zero so it reads "alive at rest", not pulsing like
+# BUSY. The parity spec's pre-prototype "≈0.4/0.1" estimate is superseded by these.
+HUD_IDLE_SHIMMER_BASE = 0.55
+HUD_IDLE_SHIMMER_AMP = 0.15
+HUD_IDLE_SHIMMER_PERIOD_S = 2.6
+
+# Geometry family (px). Active panel is the shipped 160×48; IDLE shrinks to 48×24
+# (macOS panel-shrink; Windows renders the pill in the full panel this pass).
+HUD_ACTIVE_PANEL_W = 160
+HUD_ACTIVE_PANEL_H = 48
+HUD_IDLE_PANEL_W = 48
+HUD_IDLE_PANEL_H = 24
+HUD_IDLE_PILL_W = 28
+HUD_IDLE_PILL_H = 6
+
+
+def hud_redraw_hz(mode: HudMode) -> int:
+    """The shared redraw rate for *mode* (ADR-0007 §5): active vs idle."""
+    return HUD_IDLE_HZ if mode is HudMode.IDLE else HUD_ACTIVE_HZ
+
+
+def hud_phase_seconds(frame: int, mode: HudMode) -> float:
+    """Convert a redraw-frame counter to wall-clock seconds for *mode*.
+
+    The frame counter advances once per redraw tick, so at the ~10 Hz idle rate it
+    runs 6× slower than at ~60 Hz active. Dividing by the *mode's* rate makes the
+    shimmer period (``HUD_IDLE_SHIMMER_PERIOD_S``) a real 2.6 s in every mode
+    instead of stretching 6× in IDLE — the animation cadence stays a shared knob,
+    decoupled from the CPU-saving throttle (ADR-0007 §5).
+    """
+    return frame / hud_redraw_hz(mode)
+
+
+def hud_idle_shimmer(frame: int, mode: HudMode = HudMode.IDLE) -> float:
+    """The IDLE pill's alpha at *frame* — a slow low-amplitude breath (ADR-0007 §5).
+
+    Shared by both hosts so the resting shimmer looks identical cross-platform.
+    """
+    phase = hud_phase_seconds(frame, mode)
+    return HUD_IDLE_SHIMMER_BASE + HUD_IDLE_SHIMMER_AMP * math.sin(
+        phase * (2.0 * math.pi / HUD_IDLE_SHIMMER_PERIOD_S)
+    )
 
 
 @runtime_checkable
@@ -142,25 +205,40 @@ class FanOutNotifier:
 
 
 class OverlayNotifier:
-    """Drives the overlay's show/hide + mode off the notification stream (ADR-0003).
+    """Drives the persistent overlay's show + mode off the notification stream.
 
-    Maps ``RECORDING`` → show + listening mode, ``BUSY`` → show + busy mode, and
-    ``CANCELLED``/``SUCCESS``/``ERROR`` → hide; ``READY``/``TRANSCRIBING`` are
-    ignored. ``BUSY`` is fired on key-release (before ``recorder.stop()``), so the
-    HUD flips to the busy visual the instant recording ends and stays shown —
-    through PROCESSING_AUDIO → TRANSCRIBING → CLEANING → PASTING — until a
-    terminal event hides it.
+    The persistent-companion contract (ADR-0007 §2): the HUD is shown **once**, on
+    ``READY``, in ``IDLE``, and is thereafter driven ``IDLE → LISTENING → BUSY →
+    IDLE`` by the event stream. **No event hides it** — it leaves the screen only
+    via ``Overlay.teardown`` on app close (ADR-0007 §3, a structural guarantee):
 
-    Because ``notify`` runs on the hotkey-listener / worker threads but AppKit
-    must run on the main thread (ADR-0001), the show/hide **and** set_mode calls
-    are **marshalled onto the main thread** via an injected ``dispatch_main``
-    callable. Show/hide are **idempotent** (show-when-shown / hide-when-hidden are
-    no-ops); ``set_mode`` is cheap and idempotent (re-setting the same mode just
-    redraws), so it is re-asserted on every show event. A broken overlay is
-    swallowed (fail-open — no HUD, never a blocked dictation).
+    - ``READY`` → show + ``set_mode(IDLE)`` (was ignored)
+    - ``RECORDING`` → show + ``set_mode(LISTENING)``
+    - ``BUSY`` → show + ``set_mode(BUSY)`` (fired on key-release, before
+      ``recorder.stop()``, so the HUD flips to busy the instant recording ends and
+      stays busy through PROCESSING_AUDIO → TRANSCRIBING → CLEANING → PASTING)
+    - ``SUCCESS`` / ``CANCELLED`` / ``ERROR`` → ``set_mode(IDLE)``, **stays shown**
+      (was hide; a distinct ERROR beat is deferred — ADR-0007 §2)
+    - ``TRANSCRIBING`` → ignored
+
+    ``_visible`` is a one-shot "have we shown yet?" latch (ADR-0007 §4): the first
+    event to arrive shows the panel; every event after is a pure flicker-free
+    ``set_mode`` on the same continuously-shown window. Because every event carries
+    ``show=True``, a missed ``READY`` show self-heals on the next ``RECORDING`` /
+    ``BUSY`` / terminal.
+
+    Because ``notify`` runs on the hotkey-listener / worker threads but AppKit must
+    run on the main thread (ADR-0001), the show **and** set_mode calls are
+    **marshalled onto the main thread** via an injected ``dispatch_main`` callable,
+    batched into a single turn. The ``hide`` callable is retained on the contract
+    (teardown and hand-built overlays reference it) but is never called from the
+    event stream. A broken overlay is swallowed (fail-open — no HUD, never a
+    blocked dictation).
     """
 
-    _HIDE_EVENTS = frozenset(
+    # Terminal events settle the HUD back to IDLE (ADR-0007 §2) — they no longer
+    # hide it. READY is handled separately (it is the first-show trigger).
+    _IDLE_EVENTS = frozenset(
         {NotificationEvent.CANCELLED, NotificationEvent.SUCCESS, NotificationEvent.ERROR}
     )
 
@@ -173,35 +251,37 @@ class OverlayNotifier:
         dispatch_main: Callable[[Callable[[], None]], None],
     ) -> None:
         self._show = show
-        self._hide = hide
+        self._hide = hide  # retained on the contract (ADR-0007 §3); never called here
         self._set_mode = set_mode
         self._dispatch_main = dispatch_main
-        self._visible = False
+        self._visible = False  # one-shot latch: have we shown the panel yet?
 
     def notify(self, event: NotificationEvent, **kwargs: Any) -> None:
-        if event is NotificationEvent.RECORDING:
-            self._request(show=True, mode=HudMode.LISTENING)
+        if event is NotificationEvent.READY:
+            self._request(HudMode.IDLE)
+        elif event is NotificationEvent.RECORDING:
+            self._request(HudMode.LISTENING)
         elif event is NotificationEvent.BUSY:
-            self._request(show=True, mode=HudMode.BUSY)
-        elif event in self._HIDE_EVENTS:
-            self._request(show=False)
-        # READY / TRANSCRIBING are neither show/hide nor mode events — ignore.
+            self._request(HudMode.BUSY)
+        elif event in self._IDLE_EVENTS:
+            self._request(HudMode.IDLE)
+        # TRANSCRIBING is neither a show nor a mode event — ignore.
 
-    def _request(self, *, show: bool, mode: HudMode | None = None) -> None:
-        # Show/hide is idempotent on visibility; mode (when given) is always
-        # re-asserted while shown — it is a cheap redraw and lets a mode switch
-        # (listening → busy) happen on the same already-visible panel with no
-        # hide/show flicker.
+    def _request(self, mode: HudMode) -> None:
+        # Persistent contract: every event shows-if-not-yet-shown (one-shot latch)
+        # then sets the mode. Nothing hides. The show + set_mode are batched into a
+        # single main-thread turn so a mode switch happens on the same window with
+        # no flicker; the latch makes the show a no-op after the first, and a missed
+        # first show self-heals on the next event (ADR-0007 §4).
         def _run() -> None:
             try:
-                if show != self._visible:
-                    self._visible = show
-                    (self._show if show else self._hide)()
-                if show and mode is not None:
-                    self._set_mode(mode)
+                if not self._visible:
+                    self._visible = True
+                    self._show()
+                self._set_mode(mode)
             except Exception:  # noqa: BLE001
                 # Fail-open: a broken overlay must never harm dictation.
-                logger.warning("overlay show/hide/set_mode failed", exc_info=True)
+                logger.warning("overlay show/set_mode failed", exc_info=True)
 
         try:
             self._dispatch_main(_run)
