@@ -31,22 +31,28 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from seda.app import AppController
-    from seda.gui.host import Overlay
 
 logger = logging.getLogger(__name__)
+
+# The overlay struct is duplicated per host (ADR-0009 §4) — macOS and Windows
+# each define their own ``Overlay``; only the four-callable ``OverlayNotifier``
+# shape is the shared contract. ``run_hosted`` is therefore generic over the
+# concrete overlay type: each host's ``build``/``run_loop``/``register_overlay``
+# agree on one ``Overlay`` and mypy infers which per call site.
+_Overlay = TypeVar("_Overlay")
 
 
 def run_hosted(
     controller: AppController,
     *,
     supports: Callable[[str], bool],
-    build: Callable[[Callable[[], float]], Overlay],
-    run_loop: Callable[[AppController, Overlay, Callable[[Overlay], None] | None], None],
-    register_overlay: Callable[[Overlay], None] | None = None,
+    build: Callable[[Callable[[], float]], _Overlay],
+    run_loop: Callable[[AppController, _Overlay, Callable[[_Overlay], None] | None], None],
+    register_overlay: Callable[[_Overlay], None] | None = None,
     platform: str | None = None,
 ) -> bool:
     """Run *controller* under a GUI host that owns the main thread (fail-open).
