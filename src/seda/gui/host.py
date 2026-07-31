@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import signal
-import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -294,6 +293,12 @@ def run_with_overlay(
 ) -> bool:
     """Run *controller* under a macOS GUI host that owns the main thread.
 
+    Thin adapter over the shared :func:`seda.gui._hostloop.run_hosted` lifecycle
+    skeleton (ADR-0009 §2): it supplies the macOS-specific ``supports`` gate
+    (``darwin``), ``build`` factory (:func:`build_overlay`), and ``run_loop``
+    (AppKit body). The shared helper owns the fail-open boundary and the
+    ``-> bool`` contract; this function owns the AppKit loop and teardown.
+
     Returns ``True`` only if the GUI host took over the main thread and ran the
     controller to shutdown; ``False`` (fail-open) when the overlay is
     unavailable — non-macOS or an AppKit import/setup failure — so the caller
@@ -305,38 +310,38 @@ def run_with_overlay(
     can wire its show/hide into the controller's notifier fan-out.
     ``platform`` is injectable (defaults to :data:`sys.platform`).
     """
-    plat = platform if platform is not None else sys.platform
-    if plat != "darwin":
-        return False
+    from seda.gui._hostloop import run_hosted
 
     build_fn = build if build is not None else build_overlay
 
-    # Fail-open covers ONLY acquiring AppKit + building the panel. If that
-    # fails (non-macOS AppKit, import error, panel build error), the overlay is
-    # unavailable and the caller safely falls back to controller.run() — the
-    # controller has NOT been started yet, so a retry is clean. The AppKit import
-    # is INSIDE the try: on a non-macOS host (or a broken pyobjc install) it
-    # raises ModuleNotFoundError, which must fail open rather than propagate.
-    try:
-        from AppKit import NSApplication
+    return run_hosted(
+        controller,
+        supports=lambda plat: plat == "darwin",
+        build=build_fn,
+        run_loop=_run_appkit_loop,
+        register_overlay=register_overlay,
+        platform=platform,
+    )
 
-        app = NSApplication.sharedApplication()
-        overlay = build_fn(lambda: controller.latest_level)
-    except (ImportError, OSError) as exc:
-        logger.info("overlay unavailable, falling back to terminal mode: %s", exc)
-        return False
-    except Exception:  # noqa: BLE001
-        logger.warning("overlay setup failed, falling back to terminal mode", exc_info=True)
-        return False
 
-    # Past this point the GUI host OWNS the run: it installs signals, starts the
-    # controller, and blocks in NSApp.run(). A failure here (e.g. the backend
-    # failing to load in controller.start()) is the controller's own error, not
-    # an overlay problem — it must NOT fall back to controller.run() (that would
-    # re-run start() and fail again). Let it propagate, exactly as controller.run()
-    # would surface the same error on the terminal path.
+def _run_appkit_loop(
+    controller: AppController,
+    overlay: Overlay,
+    register_overlay: Callable[[Overlay], None] | None,
+) -> None:
+    """macOS ``run_loop`` body for :func:`run_hosted` (past the fail-open boundary).
+
+    Acquires the shared ``NSApplication`` and drives the AppKit host. The AppKit
+    import lives here (not in the fail-open try): by the time ``run_hosted`` calls
+    this, ``build`` has already succeeded, which on macOS means AppKit imported
+    cleanly inside :func:`build_overlay`. The live ``NSApplication`` handle stays
+    inside this loop (ADR-0009 §2) so the hardware-validated
+    :func:`_run_appkit_host` keeps its signature untouched.
+    """
+    from AppKit import NSApplication
+
+    app = NSApplication.sharedApplication()
     _run_appkit_host(controller, app, overlay, register_overlay)
-    return True
 
 
 def _run_appkit_host(
