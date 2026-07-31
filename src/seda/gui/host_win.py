@@ -7,11 +7,14 @@ Win32-specific *mechanics*: an interruptible ``PeekMessageW(PM_REMOVE)`` pump
 with a bare polled stop flag (ADR-0008 §2/§3), and raw Win32 + GDI+ via stdlib
 ``ctypes`` (zero new deps).
 
-**Step 3 scope — lifecycle + threading only.** Every Win32/GDI+ touch sits behind
-a module-level shim (ADR-0005) so unit tests monkeypatch fakes and **CI never
-loads ``ctypes.windll``**. Real per-pixel drawing (:func:`_paint`) is a no-op
-stub here; the card/bars render body is Step 4 (spike-gated on #66, parity spec
-`docs/specs/windows-hud-parity.md`).
+**Draw core (Step 4, epic #74).** Every Win32/GDI+ touch sits behind a
+module-level shim (ADR-0005) so unit tests monkeypatch fakes and **CI never
+loads ``ctypes.windll``**. The Option-B render path (:func:`_paint` +
+:func:`_blit`) is the hardware-validated stack from spike #66: GDI+ draws the
+card + bars into a top-down 32-bit ARGB DIB with ``CompositingModeSourceCopy``,
+the bytes are premultiplied, then ``UpdateLayeredWindow(ULW_ALPHA)`` blits them.
+The three modes' math ports 1:1 from ``WaveformView.drawRect_`` (parity spec
+`docs/specs/windows-hud-parity.md`); ``HudMode.IDLE`` is deferred to #56.
 
 **CI-cleanliness invariant.** ``import ctypes`` at module top is fine (stdlib,
 present on Linux), but ``ctypes.WINFUNCTYPE`` does not exist on non-Windows
@@ -36,6 +39,7 @@ import logging
 import queue
 import signal
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from seda.notifications import HudMode
@@ -63,6 +67,61 @@ SW_HIDE = 0
 SW_SHOWNOACTIVATE = 4
 SW_SHOWNA = 8
 
+# Window messages / pump / cursor (plain ints — import-safe).
+WM_DESTROY = 0x0002
+WM_CLOSE = 0x0010
+WM_TIMER = 0x0113
+WM_MOUSEACTIVATE = 0x0021
+WM_QUIT = 0x0012
+MA_NOACTIVATE = 3
+PM_REMOVE = 0x0001
+IDC_ARROW = 32512
+
+# Z-order / SetWindowPos flags.
+HWND_TOPMOST = -1  # wrapped as ctypes.c_void_p(-1) at the call site
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
+SWP_NOACTIVATE = 0x0010
+SWP_NOZORDER = 0x0004
+
+# CreateDIBSection / BITMAPINFOHEADER.
+BI_RGB = 0
+DIB_RGB_COLORS = 0
+
+# UpdateLayeredWindow / BLENDFUNCTION.
+AC_SRC_OVER = 0x00  # BlendOp
+AC_SRC_ALPHA = 0x01  # AlphaFormat -> source is premultiplied ARGB
+ULW_ALPHA = 0x00000002
+
+# GDI+ enums / status.
+SMOOTHING_MODE_ANTIALIAS = 4
+# CompositingModeSourceCopy (1), NOT SourceOver (0) — see the discrepancy note in
+# _gdip_create_from_hdc and memory:windows-hud-gdiplus-sourcecopy (#66 hardware finding).
+COMPOSITING_MODE_SOURCE_COPY = 1
+FLUSH_INTENTION_SYNC = 1
+GDIP_OK = 0
+
+# Win32 error / system-parameter codes.
+ERROR_CLASS_ALREADY_EXISTS = 1410
+SPI_GETWORKAREA = 0x0030
+# DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4.
+_DPI_PER_MONITOR_V2 = -4
+
+_CLASS_NAME = "SedaHudOverlay"
+
+# Palette (straight-alpha ARGB, 0xAARRGGBB as GDI+ expects). Verbatim from the
+# macOS render truth via the #66 spike: card black alpha 0.55 -> 140; bars white
+# alpha 0.92 -> 235. Exact integer literals (no int() on a fractional alpha).
+CARD_ALPHA = 140
+BAR_ALPHA = 235
+CARD_ARGB = (CARD_ALPHA << 24) | 0x000000  # 0x8C000000
+BAR_ARGB = (BAR_ALPHA << 24) | 0xFFFFFF  # 0xEBFFFFFF
+
+# ctypes width aliases (plain type objects — import-safe). GDI+ handles are
+# pointer-width (Gp* opaque pointers); the GDI+ token is ULONG_PTR.
+GpHandle = ctypes.c_void_p
+ULONG_PTR = ctypes.c_size_t
+
 # Panel geometry (1:1 with macOS build_overlay; parity spec Part 2).
 _PANEL_W, _PANEL_H = 160, 48
 
@@ -87,10 +146,164 @@ def _interval_ms(mode: HudMode) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lazy native cache (ADR-0005 CI-cleanliness). Everything that would touch
+# ``ctypes.WINFUNCTYPE`` or ``ctypes.windll`` — the WNDPROC functype, the
+# ``Structure`` layouts, the DLL handles — is built ONCE inside :func:`_load_libs`
+# and stashed here. At import ``_NATIVE`` is ``None`` and nothing native is
+# evaluated, so importing this module on Linux runs zero native code (the
+# ``test_module_imports_without_touching_windll`` poison test). ``ctypes.Structure``
+# subclasses with ``wintypes`` fields are technically import-safe (the aliases
+# resolve to plain ``ctypes.c_*``), but the WNDPROC functype is NOT — so we keep
+# ALL native surface in one lazy place rather than splitting it fragilely.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Native:
+    """The lazily-built Win32/GDI+ surface: DLL handles, the WNDPROC functype, the
+    ctypes ``Structure`` layouts, the process HINSTANCE, and the window class name."""
+
+    user32: Any
+    gdi32: Any
+    gdiplus: Any
+    kernel32: Any
+    wt: Any  # the ctypes.wintypes module (shims reach RECT/POINT/MSG/BOOL/HANDLE via it)
+    WNDPROCTYPE: Any
+    WNDCLASSEXW: type
+    BITMAPINFO: type
+    BITMAPINFOHEADER: type
+    BLENDFUNCTION: type
+    GdiplusStartupInput: type
+    SIZE: type
+    hinst: Any
+    class_name: str
+
+
+_NATIVE: _Native | None = None  # populated once by _load_libs; None at import
+
+
+def _n() -> _Native:
+    """Return the populated native cache (asserts :func:`_load_libs` has run)."""
+    assert _NATIVE is not None, "_load_libs() must run before any native shim"
+    return _NATIVE
+
+
+def _win_error() -> BaseException:
+    """Build an ``OSError`` from ``GetLastError`` (Windows-only ctypes surface).
+
+    ``ctypes.WinError``/``ctypes.get_last_error`` exist ONLY on Windows: mypy on
+    non-Windows flags them ``[attr-defined]``, mypy on Windows would flag the
+    ignore as unused — so the dual-code ``# type: ignore`` lives here, in ONE
+    place, and every shim raises ``raise _win_error()`` instead of repeating it.
+    Returns (does not raise) so call sites read ``raise _win_error()``.
+    """
+    get_last_error = ctypes.get_last_error  # type: ignore[attr-defined, unused-ignore]
+    win_error = ctypes.WinError  # type: ignore[attr-defined, unused-ignore]
+    return win_error(get_last_error())  # type: ignore[no-any-return, unused-ignore]
+
+
+def _last_error() -> int:
+    """Return ``GetLastError`` (Windows-only ctypes surface; dual-code ignore).
+
+    Used where the error *code* is inspected (e.g. the F1b already-registered
+    allow-list) rather than raised — otherwise call :func:`_win_error`.
+    """
+    get_last_error = ctypes.get_last_error  # type: ignore[attr-defined, unused-ignore]
+    return get_last_error()  # type: ignore[no-any-return, unused-ignore]
+
+
+# ---------------------------------------------------------------------------
+# GDI+ draw helpers (pure-Python signatures; take the gdiplus handle explicitly
+# so they are import-safe and unit-reachable). Ported from the #66 spike.
+# ---------------------------------------------------------------------------
+
+
+def _add_round_rect_i(gp: Any, path: Any, x: int, y: int, w: int, h: int, r: int) -> None:
+    """Build a rounded rectangle into *path* via 4 integer corner arcs + close.
+
+    Card only (its geometry ``0,0,w,h,8`` is integral, so ``...ArcI`` truncates
+    nothing). Angles: TL 180, TR 270, BR 0, BL 90 — each sweeping +90 clockwise
+    (harness ``_add_round_rect`` verbatim).
+    """
+    d = 2 * r
+    gp.GdipAddPathArcI(path, x, y, d, d, 180.0, 90.0)  # TL
+    gp.GdipAddPathArcI(path, x + w - d, y, d, d, 270.0, 90.0)  # TR
+    gp.GdipAddPathArcI(path, x + w - d, y + h - d, d, d, 0.0, 90.0)  # BR
+    gp.GdipAddPathArcI(path, x, y + h - d, d, d, 90.0, 90.0)  # BL
+    gp.GdipClosePathFigure(path)
+
+
+def _add_round_rect_f(gp: Any, path: Any, x: float, y: float, w: float, h: float, r: float) -> None:
+    """Rounded rectangle via 4 FLOAT corner arcs (``GdipAddPathArc``).
+
+    Used for the pill bars: integer arcs would truncate the bar's top and height
+    independently and shift it off-centre by up to 1 px, breaking the vertical
+    symmetry about ``cy``. Float arcs keep sub-pixel symmetry.
+    """
+    d = 2.0 * r
+    gp.GdipAddPathArc(path, x, y, d, d, 180.0, 90.0)
+    gp.GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0)
+    gp.GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0)
+    gp.GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0)
+    gp.GdipClosePathFigure(path)
+
+
+def _fill_bar(gp: Any, g: Any, brush: Any, x: float, cy: float, half: float, bw: int) -> None:
+    """Fill one pill bar: rect ``(x, cy-half, bw, 2*half)``, cap radius ``bw/2``.
+
+    PARITY: macOS ``drawRect_`` fills bars with roundedRect xRadius=width/2 (pill
+    caps). The #66 spike used plain ``FillRectangleI`` (square) — enough for the
+    halo/AA verdict but NOT pixel-parity. We port pill caps via a per-bar FLOAT
+    rounded path (r=bw/2, ``GdipAddPathArc`` not ``...ArcI``) so top/height keep
+    sub-pixel symmetry about ``cy``. #66 proved AA edges composite clean, so pill
+    bars composite clean too. The brush carries the bar's alpha.
+    """
+    path = GpHandle()
+    gp.GdipCreatePath(0, ctypes.byref(path))
+    try:
+        _add_round_rect_f(gp, path, x, cy - half, float(bw), 2.0 * half, bw / 2.0)
+        gp.GdipFillPath(g, brush, path)
+    finally:
+        gp.GdipDeletePath(path)
+
+
+def _premultiply(backbuffer: dict[str, Any]) -> None:
+    """Premultiply the DIB's straight-alpha ARGB in place (called from :func:`_blit`).
+
+    PARITY-SPEC DISCREPANCY: parity spec Part 1 says "no per-pixel Python loop".
+    #66 PROVED the walk is REQUIRED: ``UpdateLayeredWindow(AC_SRC_ALPHA)`` needs
+    premultiplied BGRA, and GDI+ ``SmoothingModeAntiAlias`` produces fractional-
+    coverage edge alphas unknown ahead of time, so pre-premultiplying known brush
+    colors cannot cover the AA edges. O(w*h)=7680 px/frame is trivially fine.
+    Follows the validated spike, not the stale spec line.
+
+    A top-down BI_RGB 32bpp DIB is little-endian 0xAARRGGBB in memory, i.e. bytes
+    ``[B, G, R, A]``. Premultiply B,G,R by A/255; leave A. Fully-transparent pixels
+    (a==0) are forced to 0 so no stray colored fringe survives; a==255 is already
+    premultiplied (x*255//255 == x) and skipped.
+    """
+    bits = backbuffer["bits"]
+    w = backbuffer["w"]
+    h = backbuffer["h"]
+    npx = w * h
+    buf = (ctypes.c_ubyte * (npx * 4)).from_address(bits.value)  # view over the DIB pixels
+    for p in range(0, npx * 4, 4):
+        a = buf[p + 3]
+        if a == 0:
+            buf[p] = 0
+            buf[p + 1] = 0
+            buf[p + 2] = 0
+        elif a != 255:
+            buf[p] = (buf[p] * a) // 255  # B
+            buf[p + 1] = (buf[p + 1] * a) // 255  # G
+            buf[p + 2] = (buf[p + 2] * a) // 255  # R
+
+
+# ---------------------------------------------------------------------------
 # Module-level shims (ADR-0005). The ONLY place raw ctypes/windll lives; unit
-# tests monkeypatch ``seda.gui.host_win._<name>``. In Step 3 the native bodies
-# are intentionally thin and several draw shims are stubs — the point is the
-# lifecycle/threading logic *around* them, proven Win32-free on Linux CI.
+# tests monkeypatch ``seda.gui.host_win._<name>``. Native ctors/DLLs are lazy
+# (first-touch from :func:`_load_libs`), so importing this module on Linux runs
+# zero native code — the lifecycle/threading logic is proven Win32-free on CI.
 # ---------------------------------------------------------------------------
 
 
@@ -98,11 +311,15 @@ def _load_libs() -> tuple[Any, Any, Any]:
     """Lazily load user32/gdi32/gdiplus, build ctypes layouts, declare prototypes.
 
     Called first from :func:`build_overlay`. Everything Windows-only lives here
-    (never at import): ``ctypes.WinDLL`` (raises ``OSError``/``AttributeError``
-    on non-Windows — the natural fail-open trigger, catalog B2), the
-    ``WINFUNCTYPE`` WNDPROC, the ``Structure`` layouts, and every
+    (never at import): ``ctypes.WinDLL``/``ctypes.windll`` (raises
+    ``OSError``/``AttributeError`` on non-Windows — the natural fail-open trigger,
+    catalog B2), the ``WINFUNCTYPE`` WNDPROC, the ``Structure`` layouts, and every
     ``restype``/``argtypes`` (mandatory on Win64 — HWND truncation, catalog G1).
+    The built surface is cached on the module global :data:`_NATIVE`.
     """
+    global _NATIVE
+    import ctypes.wintypes as wt  # lazy; import-safe, kept here so native surface is one place
+
     # ctypes.windll exists ONLY on Windows: mypy on non-Windows flags it
     # [attr-defined], mypy on Windows would otherwise flag the ignore as unused —
     # so silence both codes to keep the strict check green on every CI platform.
@@ -110,7 +327,96 @@ def _load_libs() -> tuple[Any, Any, Any]:
     user32 = windll.user32
     gdi32 = windll.gdi32
     gdiplus = windll.gdiplus
+    kernel32 = windll.kernel32
+
+    lresult = ctypes.c_ssize_t  # LRESULT is LONG_PTR (pointer-width), never c_long
+    wndproctype = ctypes.WINFUNCTYPE(  # type: ignore[attr-defined, unused-ignore]
+        lresult, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM
+    )
+
+    class WNDCLASSEXW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wt.UINT),
+            ("style", wt.UINT),
+            ("lpfnWndProc", wndproctype),
+            ("cbClsExtra", ctypes.c_int),
+            ("cbWndExtra", ctypes.c_int),
+            ("hInstance", wt.HINSTANCE),
+            ("hIcon", wt.HICON),
+            ("hCursor", wt.HANDLE),
+            ("hbrBackground", wt.HBRUSH),
+            ("lpszMenuName", wt.LPCWSTR),
+            ("lpszClassName", wt.LPCWSTR),
+            ("hIconSm", wt.HICON),
+        ]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wt.DWORD),
+            ("biWidth", wt.LONG),
+            ("biHeight", wt.LONG),  # NEGATIVE => top-down DIB
+            ("biPlanes", wt.WORD),
+            ("biBitCount", wt.WORD),
+            ("biCompression", wt.DWORD),
+            ("biSizeImage", wt.DWORD),
+            ("biXPelsPerMeter", wt.LONG),
+            ("biYPelsPerMeter", wt.LONG),
+            ("biClrUsed", wt.DWORD),
+            ("biClrImportant", wt.DWORD),
+        ]
+
+    class BITMAPINFO(ctypes.Structure):
+        _fields_ = [
+            ("bmiHeader", BITMAPINFOHEADER),
+            ("bmiColors", wt.DWORD * 3),  # padding; unused for 32bpp BI_RGB
+        ]
+
+    class BLENDFUNCTION(ctypes.Structure):
+        # Field ORDER and TYPES matter: all four are BYTE.
+        _fields_ = [
+            ("BlendOp", ctypes.c_ubyte),
+            ("BlendFlags", ctypes.c_ubyte),
+            ("SourceConstantAlpha", ctypes.c_ubyte),
+            ("AlphaFormat", ctypes.c_ubyte),
+        ]
+
+    class GdiplusStartupInput(ctypes.Structure):
+        _fields_ = [
+            ("GdiplusVersion", wt.UINT),
+            ("DebugEventCallback", ctypes.c_void_p),
+            ("SuppressBackgroundThread", wt.BOOL),
+            ("SuppressExternalCodecs", wt.BOOL),
+        ]
+
+    class SIZE(ctypes.Structure):
+        _fields_ = [("cx", wt.LONG), ("cy", wt.LONG)]
+
+    # Assign the cache FIRST (with hinst placeholder), so _declare_prototypes can
+    # read the struct types via _n(); fill hinst just below.
+    _NATIVE = _Native(
+        user32=user32,
+        gdi32=gdi32,
+        gdiplus=gdiplus,
+        kernel32=kernel32,
+        wt=wt,
+        WNDPROCTYPE=wndproctype,
+        WNDCLASSEXW=WNDCLASSEXW,
+        BITMAPINFO=BITMAPINFO,
+        BITMAPINFOHEADER=BITMAPINFOHEADER,
+        BLENDFUNCTION=BLENDFUNCTION,
+        GdiplusStartupInput=GdiplusStartupInput,
+        SIZE=SIZE,
+        hinst=None,
+        class_name=_CLASS_NAME,
+    )
     _declare_prototypes(user32, gdi32, gdiplus)
+
+    # kernel32.GetModuleHandleW inline (the _declare_prototypes arity is frozen to
+    # three libs; only GetModuleHandleW is needed here). restype MUST be declared
+    # or the HMODULE truncates on Win64 (catalog G1).
+    kernel32.GetModuleHandleW.restype = wt.HMODULE
+    kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+    _NATIVE.hinst = kernel32.GetModuleHandleW(None)  # the process module handle (§HINSTANCE)
     return user32, gdi32, gdiplus
 
 
@@ -118,12 +424,191 @@ def _declare_prototypes(user32: Any, gdi32: Any, gdiplus: Any) -> None:
     """Set ``restype``/``argtypes`` on every windll call (Win64 truncation guard).
 
     Mandatory — an undeclared ``CreateWindowExW`` truncates its 64-bit HWND to a
-    32-bit ``c_int`` (catalog G1). Implemented against the validated prototype
-    (`proto/windows-overlay-focus`). Fleshed out in Step 4; the declaration site
-    exists now so tests can assert it is called.
+    32-bit ``c_int`` (catalog G1). Ported from the validated #66 spike. Reads the
+    ctypes ``Structure`` types from the cache (:func:`_n`), which is already
+    populated by :func:`_load_libs` before this call. Exercised by the T2
+    win32-only integration test (G1), not T1.
     """
-    # Step 3: the concrete prototype table lands with the real draw core (Step 4).
-    # It is exercised by the T2 win32-only integration test (G1), not T1.
+    n = _n()
+    wt = n.wt
+    c_int = ctypes.c_int
+
+    # --- user32: class / window lifecycle ---
+    user32.LoadCursorW.restype = wt.HANDLE
+    user32.LoadCursorW.argtypes = [wt.HINSTANCE, wt.LPCWSTR]
+
+    user32.RegisterClassExW.restype = wt.ATOM
+    user32.RegisterClassExW.argtypes = [ctypes.POINTER(n.WNDCLASSEXW)]
+
+    user32.UnregisterClassW.restype = wt.BOOL
+    user32.UnregisterClassW.argtypes = [wt.LPCWSTR, wt.HINSTANCE]
+
+    user32.CreateWindowExW.restype = wt.HWND
+    user32.CreateWindowExW.argtypes = [
+        wt.DWORD,
+        wt.LPCWSTR,
+        wt.LPCWSTR,
+        wt.DWORD,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        wt.HWND,
+        wt.HMENU,
+        wt.HINSTANCE,
+        wt.LPVOID,
+    ]
+
+    user32.DestroyWindow.restype = wt.BOOL
+    user32.DestroyWindow.argtypes = [wt.HWND]
+
+    user32.DefWindowProcW.restype = ctypes.c_ssize_t  # LRESULT
+    user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+
+    user32.IsWindow.restype = wt.BOOL
+    user32.IsWindow.argtypes = [wt.HWND]
+
+    # --- show / z-order ---
+    user32.ShowWindow.restype = wt.BOOL
+    user32.ShowWindow.argtypes = [wt.HWND, c_int]
+
+    user32.SetWindowPos.restype = wt.BOOL
+    user32.SetWindowPos.argtypes = [
+        wt.HWND,
+        wt.HWND,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        wt.UINT,
+    ]
+
+    # --- work area (bottom-centre placement, catalog E7) ---
+    user32.SystemParametersInfoW.restype = wt.BOOL
+    user32.SystemParametersInfoW.argtypes = [wt.UINT, wt.UINT, wt.LPVOID, wt.UINT]
+
+    # --- timers ---
+    user32.SetTimer.restype = ctypes.c_void_p  # UINT_PTR
+    user32.SetTimer.argtypes = [wt.HWND, ctypes.c_void_p, wt.UINT, wt.LPVOID]
+    user32.KillTimer.restype = wt.BOOL
+    user32.KillTimer.argtypes = [wt.HWND, ctypes.c_void_p]
+
+    # --- message pump ---
+    user32.PeekMessageW.restype = wt.BOOL
+    user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wt.MSG),
+        wt.HWND,
+        wt.UINT,
+        wt.UINT,
+        wt.UINT,
+    ]
+    user32.TranslateMessage.restype = wt.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
+    user32.DispatchMessageW.restype = ctypes.c_ssize_t  # LRESULT
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
+    user32.PostQuitMessage.restype = None
+    user32.PostQuitMessage.argtypes = [c_int]
+
+    # --- DCs (for the DIB blit) ---
+    user32.GetDC.restype = wt.HDC
+    user32.GetDC.argtypes = [wt.HWND]
+    user32.ReleaseDC.restype = c_int
+    user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+
+    # --- UpdateLayeredWindow: the blit that IS the paint (no WM_PAINT) ---
+    user32.UpdateLayeredWindow.restype = wt.BOOL
+    user32.UpdateLayeredWindow.argtypes = [
+        wt.HWND,
+        wt.HDC,  # hdcDst (NULL)
+        ctypes.POINTER(wt.POINT),  # pptDst
+        ctypes.POINTER(n.SIZE),  # psize
+        wt.HDC,  # hdcSrc (memory DC with DIB)
+        ctypes.POINTER(wt.POINT),  # pptSrc
+        wt.COLORREF,  # crKey
+        ctypes.POINTER(n.BLENDFUNCTION),  # pblend
+        wt.DWORD,  # dwFlags
+    ]
+
+    # --- gdi32: memory DC + DIB section ---
+    gdi32.CreateCompatibleDC.restype = wt.HDC
+    gdi32.CreateCompatibleDC.argtypes = [wt.HDC]
+    gdi32.DeleteDC.restype = wt.BOOL
+    gdi32.DeleteDC.argtypes = [wt.HDC]
+    gdi32.SelectObject.restype = wt.HGDIOBJ
+    gdi32.SelectObject.argtypes = [wt.HDC, wt.HGDIOBJ]
+    gdi32.DeleteObject.restype = wt.BOOL
+    gdi32.DeleteObject.argtypes = [wt.HGDIOBJ]
+    gdi32.CreateDIBSection.restype = wt.HBITMAP
+    gdi32.CreateDIBSection.argtypes = [
+        wt.HDC,
+        ctypes.POINTER(n.BITMAPINFO),
+        wt.UINT,
+        ctypes.POINTER(ctypes.c_void_p),  # ppvBits (OUT)
+        wt.HANDLE,
+        wt.DWORD,
+    ]
+
+    # --- GDI+ flat API. All handles pointer-width; status is GpStatus (int). ---
+    gdiplus.GdiplusStartup.restype = c_int
+    gdiplus.GdiplusStartup.argtypes = [
+        ctypes.POINTER(ULONG_PTR),  # &token (OUT, pointer-width)
+        ctypes.POINTER(n.GdiplusStartupInput),
+        ctypes.c_void_p,  # &output (NULL)
+    ]
+    gdiplus.GdiplusShutdown.restype = None
+    gdiplus.GdiplusShutdown.argtypes = [ULONG_PTR]
+
+    gdiplus.GdipCreateFromHDC.restype = c_int
+    gdiplus.GdipCreateFromHDC.argtypes = [wt.HDC, ctypes.POINTER(GpHandle)]
+    gdiplus.GdipDeleteGraphics.restype = c_int
+    gdiplus.GdipDeleteGraphics.argtypes = [GpHandle]
+
+    gdiplus.GdipSetSmoothingMode.restype = c_int
+    gdiplus.GdipSetSmoothingMode.argtypes = [GpHandle, c_int]
+    gdiplus.GdipSetCompositingMode.restype = c_int
+    gdiplus.GdipSetCompositingMode.argtypes = [GpHandle, c_int]
+
+    gdiplus.GdipGraphicsClear.restype = c_int
+    gdiplus.GdipGraphicsClear.argtypes = [GpHandle, wt.DWORD]  # ARGB
+
+    gdiplus.GdipCreateSolidFill.restype = c_int
+    gdiplus.GdipCreateSolidFill.argtypes = [wt.DWORD, ctypes.POINTER(GpHandle)]  # ARGB, &brush
+    gdiplus.GdipDeleteBrush.restype = c_int
+    gdiplus.GdipDeleteBrush.argtypes = [GpHandle]
+
+    gdiplus.GdipCreatePath.restype = c_int
+    gdiplus.GdipCreatePath.argtypes = [c_int, ctypes.POINTER(GpHandle)]  # FillMode, &path
+    gdiplus.GdipDeletePath.restype = c_int
+    gdiplus.GdipDeletePath.argtypes = [GpHandle]
+    gdiplus.GdipAddPathArcI.restype = c_int
+    gdiplus.GdipAddPathArcI.argtypes = [
+        GpHandle,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        ctypes.c_float,
+        ctypes.c_float,  # startAngle, sweepAngle
+    ]
+    gdiplus.GdipAddPathArc.restype = c_int  # float variant (pill bars)
+    gdiplus.GdipAddPathArc.argtypes = [
+        GpHandle,
+        ctypes.c_float,
+        ctypes.c_float,
+        ctypes.c_float,
+        ctypes.c_float,
+        ctypes.c_float,
+        ctypes.c_float,
+    ]
+    gdiplus.GdipClosePathFigure.restype = c_int
+    gdiplus.GdipClosePathFigure.argtypes = [GpHandle]
+    gdiplus.GdipFillPath.restype = c_int
+    gdiplus.GdipFillPath.argtypes = [GpHandle, GpHandle, GpHandle]  # graphics, brush, path
+
+    # GdipFlush(graphics, FlushIntention): GDI+ batches drawing; flush Sync so the
+    # premultiply walk reads committed bytes, not a torn/partial frame.
+    gdiplus.GdipFlush.restype = c_int
+    gdiplus.GdipFlush.argtypes = [GpHandle, c_int]
 
 
 def _make_wndproc(state: dict[str, Any]) -> Any:
@@ -132,104 +617,419 @@ def _make_wndproc(state: dict[str, Any]) -> Any:
     The returned object MUST outlive :func:`_destroy_window` — ``WM_DESTROY``
     dispatches into it synchronously during the destroy call. It is held on the
     :class:`Overlay` (``_wndproc_ref``) until after teardown destroys the window.
+
+    ``WM_TIMER`` reaches the redraw via ``state["tick"]`` (mirrored onto *state*
+    by :func:`build_overlay`). The tick is UNGUARDED here by contract: the pump's
+    ``DispatchMessageW`` path is where a raising tick surfaces, and
+    :func:`_run_win32_loop` lets it propagate (a genuine draw crash is not
+    silently swallowed at the WNDPROC).
     """
-    return object()  # Step 3 placeholder; real WNDPROC lands in Step 4.
+    n = _n()
+
+    def _proc(hwnd: Any, msg: int, wparam: int, lparam: int) -> int:
+        if msg == WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE  # belt-and-braces: never activate on a click
+        if msg == WM_TIMER:
+            tick = state.get("tick")
+            if tick is not None:
+                tick()  # re-blit for animation (NO WM_PAINT under ULW)
+            return 0
+        if msg == WM_CLOSE:
+            n.user32.DestroyWindow(hwnd)  # traverse WM_DESTROY for real teardown
+            return 0
+        if msg == WM_DESTROY:
+            n.user32.PostQuitMessage(0)
+            return 0
+        result: int = n.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+        return result
+
+    # The WNDPROCTYPE-wrapped callable is the GC-keepalive object held on Overlay.
+    wndproc: Any = n.WNDPROCTYPE(_proc)
+    return wndproc
 
 
 def _gdiplus_startup() -> Any:
     """``GdiplusStartup``; returns the token held for teardown (catalog C2)."""
-    return object()
+    n = _n()
+    token = ULONG_PTR(0)
+    inp = n.GdiplusStartupInput(1, None, False, False)
+    st = n.gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(inp), None)
+    if st != GDIP_OK:
+        raise OSError(f"GdiplusStartup status={st}")  # C2
+    return token  # ULONG_PTR held for teardown
 
 
 def _gdiplus_shutdown(token: Any) -> None:
     """``GdiplusShutdown`` (teardown, catalog F1)."""
+    if token is not None:
+        _n().gdiplus.GdiplusShutdown(token)
 
 
 def _set_dpi_awareness() -> None:
     """``SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`` (catalog C1/C1b).
 
+    Decisive for render quality: without it the DWM bitmap-stretches the layered
+    surface on any non-100%-DPI machine, softening the antialiased corners.
     Benign failures (``E_ACCESSDENIED`` "already set" / an absent entry point on
     down-level Windows) are swallowed *inside this shim* and the build continues
-    (C1b allow-list). Every other failure raises → the build fails open (C1).
+    (C1b allow-list); the older ``SetProcessDPIAware`` is the down-level fallback.
     """
+    n = _n()
+    try:
+        n.user32.SetProcessDpiAwarenessContext.restype = n.wt.BOOL
+        n.user32.SetProcessDpiAwarenessContext.argtypes = [n.wt.HANDLE]
+        if n.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(_DPI_PER_MONITOR_V2)):
+            return
+    except (AttributeError, OSError):
+        pass  # C1b benign: down-level entry point / already-set
+    try:
+        n.user32.SetProcessDPIAware.restype = n.wt.BOOL
+        n.user32.SetProcessDPIAware.argtypes = []
+        n.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass  # C1b benign fallback; a low-DPI box needs neither
 
 
 def _register_class(wndproc_ref: Any) -> Any:
     """``RegisterClassExW``; returns the class atom (catalog C3).
 
     Register-or-reuse: an already-registered class is a success, not a failure
-    (self-healing on relaunch, catalog F1b).
+    (self-healing on relaunch, catalog F1b) — the class *name* works as
+    ``lpClassName`` for ``CreateWindowExW`` regardless of the atom.
+
+    The ``hinst`` threaded through :func:`build_overlay` is the frozen ``None``;
+    the real module handle is ``_NATIVE.hinst`` (``GetModuleHandleW(None)``,
+    restype=HMODULE, captured in :func:`_load_libs`). Signatures stay frozen.
     """
-    return object()
+    n = _n()
+    cls = n.WNDCLASSEXW()  # ctypes zero-inits all fields
+    cls.cbSize = ctypes.sizeof(n.WNDCLASSEXW)
+    cls.lpfnWndProc = wndproc_ref  # the WNDPROCTYPE object from _make_wndproc
+    cls.hInstance = n.hinst
+    cls.hCursor = n.user32.LoadCursorW(None, ctypes.c_wchar_p(IDC_ARROW))
+    cls.hbrBackground = None  # layered ULW window paints itself; no bg brush
+    cls.lpszClassName = n.class_name
+    atom = n.user32.RegisterClassExW(ctypes.byref(cls))
+    if not atom:
+        if _last_error() == ERROR_CLASS_ALREADY_EXISTS:
+            return n.class_name  # F1b register-or-reuse
+        raise _win_error()  # C3
+    return atom
 
 
 def _unregister_class(atom: Any, hinst: Any) -> None:
-    """``UnregisterClassW`` (teardown, catalog F1/F1b)."""
+    """``UnregisterClassW`` (teardown, catalog F1/F1b).
+
+    ``hinst`` param is the frozen ``None`` from :func:`build_overlay`; use the
+    cached ``_NATIVE.hinst`` (same handle as register — a mismatch fails the
+    unregister). Unregistering by class name is correct for a name-registered class.
+    """
+    n = _n()
+    n.user32.UnregisterClassW(n.class_name, n.hinst)
 
 
 def _create_window(atom: Any) -> Any:
-    """``CreateWindowExW`` with the overlay ex-style set; NULL raises (catalog C4)."""
-    return object()
+    """``CreateWindowExW`` with the overlay ex-style set; NULL raises (catalog C4).
+
+    ``atom`` is accepted for signature-compatibility but unused — the class *name*
+    is the ``lpClassName`` (works for both a fresh atom and the F1b reuse path).
+    The initial rect is the bottom-centre placement; ``UpdateLayeredWindow``
+    repositions the window on every blit thereafter.
+    """
+    n = _n()
+    x, y, w, h = _placement(_PANEL_W, _PANEL_H)
+    hwnd = n.user32.CreateWindowExW(
+        _OVERLAY_EX_STYLE,
+        n.class_name,
+        "seda-hud",
+        WS_POPUP,
+        x,
+        y,
+        w,
+        h,
+        None,
+        None,
+        n.hinst,
+        None,
+    )
+    if not hwnd:
+        raise _win_error()  # C4
+    return hwnd
 
 
 def _destroy_window(hwnd: Any) -> None:
     """``DestroyWindow`` (teardown, catalog F1). Dispatches ``WM_DESTROY`` into
     the WNDPROC synchronously — the ``_wndproc_ref`` must still be alive here."""
+    n = _n()
+    if hwnd is not None and n.user32.IsWindow(hwnd):
+        n.user32.DestroyWindow(hwnd)
 
 
 def _create_dib(w: int, h: int) -> tuple[Any, Any, Any]:
-    """``CreateDIBSection`` (top-down 32-bit premultiplied ARGB); NULL raises (C5).
+    """``CreateDIBSection`` (top-down 32-bit ARGB) + a memory DC; NULL raises (C5).
 
-    Returns ``(dib, hdc, bits)``.
+    Returns ``(dib, hdc, bits)`` — ``bits`` is the ``c_void_p`` OUT pixel pointer
+    (its ``.value`` is the pixel address the premultiply walk views). ``biHeight``
+    is NEGATIVE so row 0 is the top row (screen orientation).
+
+    ATOMICITY (catalog C0): the outer :func:`build_overlay` undo is not armed
+    until this returns, so this shim disposes its OWN partial allocations (DC and
+    DIB) on a mid-build failure before re-raising.
     """
-    return object(), object(), object()
+    n = _n()
+    bmi = n.BITMAPINFO()
+    bmi.bmiHeader.biSize = ctypes.sizeof(n.BITMAPINFOHEADER)
+    bmi.bmiHeader.biWidth = w
+    bmi.bmiHeader.biHeight = -h  # NEGATIVE = top-down (CRITICAL)
+    bmi.bmiHeader.biPlanes = 1
+    bmi.bmiHeader.biBitCount = 32
+    bmi.bmiHeader.biCompression = BI_RGB
+    bits = ctypes.c_void_p(0)
+    screen_dc = n.user32.GetDC(None)
+    dib = n.gdi32.CreateDIBSection(
+        screen_dc, ctypes.byref(bmi), DIB_RGB_COLORS, ctypes.byref(bits), None, 0
+    )
+    n.user32.ReleaseDC(None, screen_dc)
+    if not dib or not bits.value:
+        raise _win_error()  # C5 — nothing allocated to leak
+    hdc = n.gdi32.CreateCompatibleDC(None)
+    if not hdc:
+        n.gdi32.DeleteObject(dib)  # atomicity: undo the DIB just made
+        raise _win_error()
+    if not n.gdi32.SelectObject(hdc, dib):  # NULL/HGDI_ERROR -> select failed
+        n.gdi32.DeleteDC(hdc)
+        n.gdi32.DeleteObject(dib)  # atomicity: undo DC + DIB
+        raise _win_error()
+    return dib, hdc, bits
 
 
 def _gdip_create_from_hdc(hdc: Any) -> Any:
     """``GdipCreateFromHDC`` + smoothing/compositing mode; fail raises (catalog C6)."""
-    return object()
+    n = _n()
+    g = GpHandle()
+    st = n.gdiplus.GdipCreateFromHDC(hdc, ctypes.byref(g))
+    if st != GDIP_OK:
+        raise OSError(f"GdipCreateFromHDC status={st}")  # C6
+    n.gdiplus.GdipSetSmoothingMode(g, SMOOTHING_MODE_ANTIALIAS)
+    # PARITY-SPEC DISCREPANCY: docs/specs/windows-hud-parity.md Part 1 says SourceOver.
+    # That is STALE. #66 hardware finding + memory:windows-hud-gdiplus-sourcecopy: SourceOver
+    # composites the translucent card against a DIB treated as opaque -> the card interior
+    # renders opaque black. SourceCopy (1) writes brush ARGB verbatim so card a=0.55 lands;
+    # AA edges still get fractional-coverage alpha copied in, so rounded corners stay smooth.
+    n.gdiplus.GdipSetCompositingMode(g, COMPOSITING_MODE_SOURCE_COPY)
+    return g
 
 
 def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
     """Render the card + bars into the backbuffer (catalog E1).
 
-    **Step 3: no-op stub.** The GDI+ draw body (parity spec Parts 2-3, the modes'
-    math ported from ``WaveformView.drawRect_``) is Step 4, gated on spike #66.
+    A 1:1 port of ``WaveformView.drawRect_`` (parity spec Parts 2-3): rounded card
+    (radius 8, black alpha 0.55) then 9 mirror/sweep bars, all constants verbatim
+    from macOS. LISTENING is the default; BUSY is the time-driven sweep; IDLE is
+    deferred to #56. Draws in straight alpha (SourceCopy writes it verbatim);
+    :func:`_blit` premultiplies before ``UpdateLayeredWindow``.
+
+    Brushes/paths are created per-frame and freed in ``finally`` so a raising
+    fill never leaks a GDI+ handle (60 Hz create/delete is negligible).
     """
+    import math
+
+    n = _n()
+    gp = n.gdiplus
+    g = backbuffer["graphics"]
+    w = backbuffer["w"]
+    h = backbuffer["h"]
+
+    # 1) Clear to fully transparent (SourceCopy writes 0x00000000 verbatim). Pixels
+    #    we never draw stay invisible; premultiply of a==0 leaves 0,0,0,0.
+    gp.GdipGraphicsClear(g, 0x00000000)
+
+    card = GpHandle()
+    bar = GpHandle()
+    path = GpHandle()
+    try:
+        # 2) CARD: rounded rect, black alpha 0.55. Integer arcs (geometry is integral).
+        gp.GdipCreatePath(0, ctypes.byref(path))  # FillMode Alternate
+        _add_round_rect_i(gp, path, 0, 0, w, h, 8)
+        gp.GdipCreateSolidFill(CARD_ARGB, ctypes.byref(card))
+        gp.GdipFillPath(g, card, path)
+        gp.GdipDeletePath(path)
+        path = GpHandle()
+
+        # 3) BARS: shared geometry (drawRect_) so LISTENING<->BUSY reads as one widget.
+        # PARITY DELTA (accepted, #66): under SourceCopy each bar fill REPLACES the card
+        # pixels it covers rather than compositing OVER them as macOS SourceOver does, so
+        # bars are pure 0xEBFFFFFF (no faint card tint). The #66 spike shipped exactly this
+        # bars-on-card SourceCopy path and passed the by-eye verdict — accepted, not a bug.
+        n_bars, bw, gap = 9, 6, 3
+        cluster = n_bars * bw + (n_bars - 1) * gap
+        x0 = (w - cluster) / 2.0
+        cy = h / 2.0
+        span = h * 0.42  # half-height at full amplitude
+        frame = state["frame"]
+        mode = state["mode"]
+        phase = frame / 60.0  # seconds-ish, as on macOS
+
+        if mode == HudMode.BUSY:
+            # Busy: a bright band sweeps L->R over a calm baseline (time-driven; no mic).
+            speed = 3.2  # bars/sec the head travels
+            head = (phase * speed) % (n_bars + 3)  # +3 = gap between sweeps
+            for i in range(n_bars):
+                d = i - head
+                bump = math.exp(-(d * d) / 2.2)
+                hh = 0.18 + 0.62 * bump  # baseline + travelling swell
+                half = max(2.0, span * hh)
+                alpha = 0.45 + 0.47 * bump
+                busy_bar = GpHandle()
+                gp.GdipCreateSolidFill(
+                    (round(alpha * 255) << 24) | 0x00FFFFFF, ctypes.byref(busy_bar)
+                )
+                try:
+                    _fill_bar(gp, g, busy_bar, x0 + i * (bw + gap), cy, half, bw)
+                finally:
+                    gp.GdipDeleteBrush(busy_bar)
+        else:
+            # Listening: symmetric mirror EQ driven by the mic level. GATE/GAIN + sqrt
+            # expand so quiet speech visibly moves the bars; raw/instant (no smoothing).
+            gate, gain = 0.006, 2.6
+            rms = float(state["level"])
+            level = max(0.0, min(1.0, math.sqrt(max(0.0, rms - gate)) * gain))
+            gp.GdipCreateSolidFill(BAR_ARGB, ctypes.byref(bar))  # constant alpha 0.92
+            for i in range(n_bars):
+                # Triangular weight: 1.0 at centre, ~0.35 at edges.
+                weight = 0.35 + 0.65 * (1.0 - abs(i - (n_bars - 1) / 2.0) / (n_bars / 2.0))
+                # Jitter scales with level so it vanishes at silence.
+                jitter = 1.0 + 0.3 * level * math.sin(phase * 9.0 + i)
+                half = max(2.0, span * level * weight * jitter)
+                _fill_bar(gp, g, bar, x0 + i * (bw + gap), cy, half, bw)
+
+        # 4) FLUSH so GDI+ commits all fills to the DIB before _blit premultiplies it.
+        gp.GdipFlush(g, FLUSH_INTENTION_SYNC)
+    finally:
+        if path:
+            gp.GdipDeletePath(path)
+        if card:
+            gp.GdipDeleteBrush(card)
+        if bar:
+            gp.GdipDeleteBrush(bar)
 
 
 def _blit(hwnd: Any, backbuffer: dict[str, Any], geom: tuple[int, int, int, int]) -> None:
-    """``UpdateLayeredWindow`` (``ULW_ALPHA``, premultiplied) — first blit C7 / runtime E1."""
+    """``UpdateLayeredWindow`` (``ULW_ALPHA``, premultiplied) — first blit C7 / runtime E1.
+
+    Premultiply the freshly-drawn DIB, then blit it at the placement origin. With
+    ``UpdateLayeredWindow`` the blit IS the paint (no ``WM_PAINT``).
+    """
+    n = _n()
+    _premultiply(backbuffer)  # walk the DIB bits before the ULW (kills halos)
+    x, y, w, h = geom
+    size = n.SIZE(w, h)
+    src = n.wt.POINT(0, 0)
+    dst = n.wt.POINT(x, y)
+    blend = n.BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
+    ok = n.user32.UpdateLayeredWindow(
+        hwnd,
+        None,  # hdcDst (NULL)
+        ctypes.byref(dst),
+        ctypes.byref(size),
+        backbuffer["hdc"],  # hdcSrc (memory DC with the DIB)
+        ctypes.byref(src),
+        0,  # crKey
+        ctypes.byref(blend),
+        ULW_ALPHA,
+    )
+    if not ok:
+        raise _win_error()  # C7 at build; runtime tick escape guarded by pump
 
 
 def _show_window(hwnd: Any, *, first: bool) -> None:
-    """``ShowWindow`` without activating: ``SW_SHOWNOACTIVATE`` first, ``SW_SHOWNA`` after."""
+    """``ShowWindow`` without activating: ``SW_SHOWNOACTIVATE`` first, ``SW_SHOWNA`` after.
+
+    On the first show, force topmost via ``SetWindowPos`` (never
+    ``SetForegroundWindow``) so the click-through overlay floats over everything.
+    """
+    n = _n()
+    n.user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE if first else SW_SHOWNA)
+    if first:
+        n.user32.SetWindowPos(
+            hwnd,
+            ctypes.c_void_p(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
 
 
 def _hide_window(hwnd: Any) -> None:
     """``ShowWindow(SW_HIDE)``."""
+    _n().user32.ShowWindow(hwnd, SW_HIDE)
 
 
 def _set_window_pos(hwnd: Any, geom: tuple[int, int, int, int]) -> None:
     """``SetWindowPos(SWP_NOACTIVATE | SWP_NOZORDER)`` for the panel-shrink (catalog E4)."""
+    n = _n()
+    x, y, w, h = geom
+    n.user32.SetWindowPos(hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER)
 
 
 def _set_timer(hwnd: Any, timer_id: int, interval_ms: int) -> int:
     """``SetTimer``; returns the timer id (initial arm C-series / re-arm E2)."""
-    return timer_id or 1
+    n = _n()
+    tid = timer_id or 1
+    n.user32.SetTimer(hwnd, ctypes.c_void_p(tid), interval_ms, None)
+    return tid
 
 
 def _kill_timer(hwnd: Any, timer_id: int) -> None:
-    """``KillTimer`` (teardown, catalog F1)."""
+    """``KillTimer`` (teardown, catalog F1).
+
+    Runs first in teardown, so it purges pending ``WM_TIMER``s for this timer from
+    the queue — no late ``WM_TIMER`` dispatches into a freed DIB/HWND, which is
+    what makes the unguarded ``_tick`` safe at teardown.
+    """
+    n = _n()
+    if hwnd is not None:
+        n.user32.KillTimer(hwnd, ctypes.c_void_p(timer_id or 1))
 
 
 def _free_dib(backbuffer: dict[str, Any]) -> None:
-    """Delete the GDI+ graphics object + DIB section (teardown, catalog F1)."""
+    """Delete the GDI+ graphics object + DIB section + memory DC (teardown, catalog F1).
+
+    Order matters: the graphics wraps the DC, so delete it FIRST, then the DIB
+    (freed explicitly by ``DeleteObject``), then the memory DC. Each field is
+    nulled after deletion so a double teardown is a harmless no-op (idempotency).
+    The stock 1×1 bitmap the DC still has selected is system-owned; ``DeleteDC``
+    releases the association without deleting our DIB.
+    """
+    n = _n()
+    g = backbuffer.get("graphics")
+    if g:
+        n.gdiplus.GdipDeleteGraphics(g)
+    backbuffer["graphics"] = None
+    dib = backbuffer.get("dib")
+    if dib:
+        n.gdi32.DeleteObject(dib)
+    backbuffer["dib"] = None
+    hdc = backbuffer.get("hdc")
+    if hdc:
+        n.gdi32.DeleteDC(hdc)
+    backbuffer["hdc"] = None
 
 
 def _monitor_geometry() -> tuple[int, int, int, int]:
-    """Primary-monitor work area ``(left, top, right, bottom)`` (catalog E7)."""
-    return 0, 0, 1920, 1080
+    """Primary-monitor work area ``(left, top, right, bottom)`` (catalog E7).
+
+    ``SystemParametersInfoW(SPI_GETWORKAREA)`` excludes the taskbar, so the HUD
+    sits above it. A failure raises → :func:`_placement` swallows and keeps the
+    last-good area.
+    """
+    n = _n()
+    r = n.wt.RECT()
+    if not n.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(r), 0):
+        raise _win_error()  # E7
+    return r.left, r.top, r.right, r.bottom
 
 
 # Last-good monitor work area, so a runtime geometry query failure (E7: RDP,
@@ -238,7 +1038,17 @@ _last_work_area: tuple[int, int, int, int] = (0, 0, 1920, 1080)
 
 
 def _pump_once() -> None:
-    """One pump drain: ``PeekMessageW(PM_REMOVE)`` + translate + dispatch (ADR-0008 §2)."""
+    """One pump drain: ``PeekMessageW(PM_REMOVE)`` + translate + dispatch (ADR-0008 §2).
+
+    Drains all currently-queued messages (each ``WM_TIMER`` runs the redraw tick
+    through the WNDPROC); returns when the queue is empty so the caller can service
+    the stop flag + dispatch queue and sleep.
+    """
+    n = _n()
+    msg = n.wt.MSG()
+    while n.user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+        n.user32.TranslateMessage(ctypes.byref(msg))
+        n.user32.DispatchMessageW(ctypes.byref(msg))
 
 
 def _sleep(seconds: float) -> None:
@@ -450,6 +1260,11 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
         _blit(hwnd, backbuffer, _placement(w, h))
 
     backbuffer["tick"] = _tick  # kept reachable for the WM_TIMER path (Step 4)
+    # WNDPROC (built at line ~349 with only `state`) reaches the redraw via
+    # state["tick"]. _tick is defined after backbuffer, so mirror it onto the same
+    # state dict the WNDPROC captured by reference — WM_TIMER can then call it.
+    # (No T1 test asserts state-key exclusivity — verified against test_gui_host_win.)
+    state["tick"] = _tick
 
     return Overlay(
         show=_show,
