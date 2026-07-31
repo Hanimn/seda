@@ -103,7 +103,10 @@ def _load_libs() -> tuple[Any, Any, Any]:
     ``WINFUNCTYPE`` WNDPROC, the ``Structure`` layouts, and every
     ``restype``/``argtypes`` (mandatory on Win64 — HWND truncation, catalog G1).
     """
-    windll = ctypes.windll  # type: ignore[attr-defined]  # absent on non-Windows -> AttributeError
+    # ctypes.windll exists ONLY on Windows: mypy on non-Windows flags it
+    # [attr-defined], mypy on Windows would otherwise flag the ignore as unused —
+    # so silence both codes to keep the strict check green on every CI platform.
+    windll = ctypes.windll  # type: ignore[attr-defined, unused-ignore]
     user32 = windll.user32
     gdi32 = windll.gdi32
     gdiplus = windll.gdiplus
