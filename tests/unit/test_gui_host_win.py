@@ -25,6 +25,10 @@ from seda.gui import host_win
 from seda.gui.host_win import Overlay, build_overlay, run_with_overlay
 from seda.notifications import HudMode
 
+# The real _paint, captured before the autouse fixture stubs it to a no-op — used
+# by the sub-rect layout test to exercise the actual draw geometry.
+_REAL_PAINT = host_win._paint
+
 # --- shim names the autouse fixture neutralizes -----------------------------
 # Every build-time / runtime / teardown shim in host_win. The fixture installs a
 # safe default fake for each so that even a real-build_overlay test never reaches
@@ -679,6 +683,78 @@ def test_set_mode_idle_redraws_immediately(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(host_win, "_paint", lambda *_a, **_k: painted.append("paint"))
     overlay.set_mode(HudMode.IDLE)
     assert painted, "set_mode triggers an immediate repaint via the stored tick"
+
+
+def test_panel_size_shrinks_only_in_idle() -> None:
+    """The on-screen panel size is 48×24 in IDLE, 160×48 active (#79 shrink)."""
+    assert host_win._panel_size(HudMode.IDLE) == (
+        host_win.HUD_IDLE_PANEL_W,
+        host_win.HUD_IDLE_PANEL_H,
+    )
+    assert host_win._panel_size(HudMode.LISTENING) == (
+        host_win.HUD_ACTIVE_PANEL_W,
+        host_win.HUD_ACTIVE_PANEL_H,
+    )
+    assert host_win._panel_size(HudMode.BUSY) == (
+        host_win.HUD_ACTIVE_PANEL_W,
+        host_win.HUD_ACTIVE_PANEL_H,
+    )
+
+
+def test_tick_blits_at_the_modes_panel_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The redraw blits at _panel_size(mode): IDLE → 48×24, active → 160×48 (#79).
+
+    This is the dimension-match that makes the shrink tear-free — _paint draws the
+    sub-rect and _blit sizes the window to the same rect in one UpdateLayeredWindow.
+    """
+    overlay = _built_overlay(monkeypatch)
+    blits: list[tuple[int, int, int, int]] = []
+    monkeypatch.setattr(host_win, "_blit", lambda _h, _b, geom: blits.append(geom))
+    # Fixed work area so _placement is deterministic.
+    monkeypatch.setattr(host_win, "_monitor_geometry", lambda: (0, 0, 1920, 1080))
+
+    tick = overlay._state["tick"] if overlay._state else None
+    assert tick is not None
+
+    overlay.set_mode(HudMode.IDLE)
+    tick()
+    assert blits[-1][2:] == (host_win.HUD_IDLE_PANEL_W, host_win.HUD_IDLE_PANEL_H)
+
+    overlay.set_mode(HudMode.LISTENING)
+    tick()
+    assert blits[-1][2:] == (host_win.HUD_ACTIVE_PANEL_W, host_win.HUD_ACTIVE_PANEL_H)
+
+
+def test_idle_paint_lays_out_against_the_shrunk_panel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_paint(IDLE) draws its card against the 48×24 sub-region, not the 160×48 DIB.
+
+    The card path's width is the shrunk panel width — proving the sub-rect layout
+    (#79), so ULW copies a 48×24 rect that matches what was drawn. Uses a fake
+    gdiplus (via _n) so no Win32 is touched; captures the card's (w,h) from
+    _add_round_rect_i (the first rounded-rect _paint builds is the card).
+    """
+    card_rects: list[tuple[int, int]] = []
+    real = host_win._add_round_rect_i
+
+    def _spy(gp: Any, path: Any, x: int, y: int, w: int, h: int, r: int) -> None:
+        card_rects.append((w, h))
+        real(gp, path, x, y, w, h, r)
+
+    class _FakeGp:
+        def __getattr__(self, _name: str) -> Any:
+            return lambda *a: 0
+
+    class _FakeNative:
+        gdiplus = _FakeGp()
+
+    monkeypatch.setattr(host_win, "_add_round_rect_i", _spy)
+    monkeypatch.setattr(host_win, "_n", lambda: _FakeNative())
+    backbuffer = {"graphics": object(), "w": 160, "h": 48}
+    _REAL_PAINT(backbuffer, {"frame": 0, "mode": HudMode.IDLE, "level": 0.0})
+    assert card_rects[0] == (host_win.HUD_IDLE_PANEL_W, host_win.HUD_IDLE_PANEL_H)
+    card_rects.clear()
+    _REAL_PAINT(backbuffer, {"frame": 0, "mode": HudMode.LISTENING, "level": 0.5})
+    assert card_rects[0] == (host_win.HUD_ACTIVE_PANEL_W, host_win.HUD_ACTIVE_PANEL_H)
 
 
 def test_wndproc_ref_is_held_on_the_overlay(monkeypatch: pytest.MonkeyPatch) -> None:

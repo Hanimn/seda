@@ -15,8 +15,8 @@ card + bars into a top-down 32-bit ARGB DIB with ``CompositingModeSourceCopy``,
 the bytes are premultiplied, then ``UpdateLayeredWindow(ULW_ALPHA)`` blits them.
 The three modes' math ports 1:1 from ``WaveformView.drawRect_`` (parity spec
 `docs/specs/windows-hud-parity.md`); ``HudMode.IDLE`` renders the compressed pill
-(the #56 look) at the shared ~10 Hz idle cadence — the panel-shrink itself is a
-follow-up (the pill is centered in the full panel this pass).
+(the #56 look) in a shrunk 48×24 panel at the shared ~10 Hz idle cadence — the
+DIB stays 160×48 and IDLE draws + blits only its top-left sub-rect (#79).
 
 **CI-cleanliness invariant.** ``import ctypes`` at module top is fine (stdlib,
 present on Linux), but ``ctypes.WINFUNCTYPE`` does not exist on non-Windows
@@ -46,7 +46,11 @@ from typing import TYPE_CHECKING, Any
 
 from seda.notifications import (
     HUD_ACTIVE_HZ,
+    HUD_ACTIVE_PANEL_H,
+    HUD_ACTIVE_PANEL_W,
     HUD_IDLE_HZ,
+    HUD_IDLE_PANEL_H,
+    HUD_IDLE_PANEL_W,
     HUD_IDLE_PILL_H,
     HUD_IDLE_PILL_W,
     HudMode,
@@ -153,6 +157,20 @@ def _interval_ms(mode: HudMode) -> int:
     its slow shimmer, cutting idle wakeups ~6×. Re-armed on every ``set_mode``.
     """
     return _IDLE_INTERVAL_MS if mode is HudMode.IDLE else _ACTIVE_INTERVAL_MS
+
+
+def _panel_size(mode: HudMode) -> tuple[int, int]:
+    """The on-screen panel size ``(w, h)`` for *mode* (parity spec Part 2).
+
+    IDLE shrinks to 48×24, LISTENING/BUSY use the active 160×48. The backing DIB
+    stays a fixed 160×48; :func:`_paint` draws the mode's content into the top-left
+    ``w×h`` sub-region and :func:`_blit` copies exactly that sub-rect via
+    ``UpdateLayeredWindow`` (``psize=(w,h)``, ``ptSrc=(0,0)``), sizing the window to
+    match — so the shrink is dimension-matched in the same blit and never tears.
+    """
+    if mode is HudMode.IDLE:
+        return HUD_IDLE_PANEL_W, HUD_IDLE_PANEL_H
+    return HUD_ACTIVE_PANEL_W, HUD_ACTIVE_PANEL_H
 
 
 # ---------------------------------------------------------------------------
@@ -855,11 +873,12 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
     alpha (SourceCopy writes it verbatim); :func:`_blit` premultiplies before
     ``UpdateLayeredWindow``.
 
-    **Windows IDLE has no panel-shrink this pass** (accepted parity gap): the pill
-    is centered in the full 160×48 window, whereas macOS shrinks the panel to 48×24.
-    The ADR-0007 §5 *cadence* (10 Hz idle) IS honored on both hosts; the shrink is a
-    #56 visual, and doing it correctly under Option B (a sub-rect ULW blit,
-    dimension-matched in one turn) is a self-contained follow-up.
+    IDLE renders into a 48×24 top-left sub-region of the DIB (the panel-shrink);
+    LISTENING/BUSY fill the active 160×48. :func:`_blit` copies only the mode's
+    ``_panel_size`` sub-rect via ``UpdateLayeredWindow`` (``psize`` from the geom
+    tuple, ``ptSrc=(0,0)``), sizing the window to match — so the shrink/grow is
+    dimension-matched in one blit and never tears. The card + content are laid out
+    against the *panel* size, not the fixed DIB size.
 
     Brushes/paths are created per-frame and freed in ``finally`` so a raising
     fill never leaks a GDI+ handle (60 Hz create/delete is negligible).
@@ -869,11 +888,15 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
     n = _n()
     gp = n.gdiplus
     g = backbuffer["graphics"]
-    w = backbuffer["w"]
-    h = backbuffer["h"]
+    mode = state["mode"]
+    # Lay out against the mode's on-screen panel size (the shrunk 48×24 in IDLE),
+    # a top-left sub-region of the fixed 160×48 DIB. _blit copies just this rect.
+    w, h = _panel_size(mode)
 
-    # 1) Clear to fully transparent (SourceCopy writes 0x00000000 verbatim). Pixels
-    #    we never draw stay invisible; premultiply of a==0 leaves 0,0,0,0.
+    # 1) Clear the FULL DIB to fully transparent (SourceCopy writes 0x00000000
+    #    verbatim). Clearing everything — not just the sub-rect — keeps stale
+    #    pixels from a prior larger frame out of any future blit. premultiply of
+    #    a==0 leaves 0,0,0,0.
     gp.GdipGraphicsClear(g, 0x00000000)
 
     card = GpHandle()
@@ -881,7 +904,7 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
     pill = GpHandle()
     path = GpHandle()
     try:
-        # 2) CARD: rounded rect, black alpha 0.55. Integer arcs (geometry is integral).
+        # 2) CARD: rounded rect over the panel sub-region. Integer arcs (integral).
         gp.GdipCreatePath(0, ctypes.byref(path))  # FillMode Alternate
         _add_round_rect_i(gp, path, 0, 0, w, h, 8)
         gp.GdipCreateSolidFill(CARD_ARGB, ctypes.byref(card))
@@ -900,13 +923,13 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
         cy = h / 2.0
         span = h * 0.42  # half-height at full amplitude
         frame = state["frame"]
-        mode = state["mode"]
         phase = frame / 60.0  # seconds-ish, as on macOS
 
         if mode == HudMode.IDLE:
             # Idle: a single compressed pill with a faint slow alpha breath (#56).
             # Shimmer is a shared knob (ADR-0007 §5) so macOS + Windows breathe
-            # identically. Centered in the full panel (no shrink this pass).
+            # identically. Centered in the shrunk 48×24 panel sub-region (w,h here
+            # are the IDLE panel size, a top-left sub-rect of the 160×48 DIB).
             alpha = hud_idle_shimmer(frame, HudMode.IDLE)
             gp.GdipCreateSolidFill((round(alpha * 255) << 24) | 0x00FFFFFF, ctypes.byref(pill))
             _fill_pill(gp, g, pill, w / 2.0, cy, float(HUD_IDLE_PILL_W), float(HUD_IDLE_PILL_H))
@@ -1188,9 +1211,9 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
     """
     _load_libs()  # lazy; declares prototypes. Non-Windows -> raises -> fail open (B2).
 
-    state: dict[str, Any] = {"level": 0.0, "frame": 0, "mode": HudMode.LISTENING}
+    state: dict[str, Any] = {"level": 0.0, "frame": 0, "mode": HudMode.IDLE}
     first_shown = {"flag": False}
-    w, h = _PANEL_W, _PANEL_H
+    w, h = _PANEL_W, _PANEL_H  # the DIB is always the max (active) size; IDLE draws a sub-rect
 
     # LIFO of guarded dispose thunks for the transactional unwind (C0). Each
     # allocation appends its undo immediately after it succeeds, so a failure at
@@ -1199,7 +1222,7 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
     # wndproc_ref stays a local (referenced) through the whole build; on failure
     # it must still be alive when _destroy_window runs its WM_DESTROY dispatch.
     wndproc_ref = _make_wndproc(state)
-    hinst: Any = None  # TODO(step 4): capture the real HINSTANCE for register/create/unregister
+    hinst: Any = None  # the real HINSTANCE is cached in _load_libs; shims read _NATIVE.hinst
     try:
         token = _gdiplus_startup()  # 1  (C2)
         undo.append(lambda: _gdiplus_shutdown(token))
@@ -1226,13 +1249,14 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
         backbuffer["graphics"] = _gdip_create_from_hdc(hdc)  # 6  (C6)
 
         _paint(backbuffer, state)  # first frame drawn into the DIB (IDLE at startup)
-        _blit(hwnd, backbuffer, _placement(w, h))  # 7  first blit, cleared buffer (C7)
+        # First blit at the startup mode's panel size (IDLE → 48×24 sub-rect).
+        _blit(hwnd, backbuffer, _placement(*_panel_size(state["mode"])))  # 7  (C7)
 
         # D0: the initial timer arm sits pre-boundary, INSIDE build, so a failure
         # here is a plain build failure that run_hosted fails open (the frozen
         # run_hosted always returns True after run_loop, so D0 cannot fail open
         # any other way — HITL-confirmed).
-        timer_id = _set_timer(hwnd, 0, _interval_ms(HudMode.LISTENING))
+        timer_id = _set_timer(hwnd, 0, _interval_ms(state["mode"]))
     except BaseException:
         # Reverse-order dispose of everything allocated so far, then re-raise.
         # wndproc_ref is still a live local, so _destroy_window's WM_DESTROY
@@ -1280,9 +1304,10 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
                 tick()  # immediate repaint at the new mode (analog of setNeedsDisplay_)
         except Exception:  # noqa: BLE001
             logger.debug("overlay set_mode redraw failed", exc_info=True)
-        # No panel-shrink on Windows this pass (accepted parity gap): the IDLE pill
-        # renders centered in the full 160x48 window. True 48x24 shrink (a sub-rect
-        # ULW blit, E4/E4b) is a self-contained follow-up; the §5 cadence IS applied.
+        # Panel-shrink (#79): the immediate redraw above (and every _tick) blits at
+        # _panel_size(mode) — 48×24 in IDLE, 160×48 active — so the window resizes to
+        # match the sub-rect _paint drew, dimension-matched in the one ULW blit (no
+        # tear, no separate SetWindowPos). E4/E4b.
 
     def _teardown() -> None:
         # Deterministic, idempotent, fail-open teardown (ADR-0008 §4, parity
@@ -1305,11 +1330,13 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
 
     def _tick() -> None:
         # WM_TIMER body (guarded, E1): sample the level and re-blit. Runs on the
-        # pump thread. Draw failures are swallowed so the pump survives.
+        # pump thread. Draw failures are swallowed so the pump survives. The blit
+        # size follows the current mode (IDLE shrinks to 48×24) — dimension-matched
+        # with the sub-region _paint drew, in this one blit, so it never tears.
         state["level"] = level_source()
         state["frame"] = state["frame"] + 1
         _paint(backbuffer, state)
-        _blit(hwnd, backbuffer, _placement(w, h))
+        _blit(hwnd, backbuffer, _placement(*_panel_size(state["mode"])))
 
     backbuffer["tick"] = _tick  # kept reachable for the WM_TIMER path (Step 4)
     # WNDPROC (built at line ~349 with only `state`) reaches the redraw via
