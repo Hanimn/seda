@@ -637,16 +637,16 @@ def test_register_class_tolerates_already_registered(monkeypatch: pytest.MonkeyP
 
 
 def test_recording_and_busy_set_mode_re_arm_the_timer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """set_mode(LISTENING/BUSY) mutates the mode and re-arms the redraw timer.
+    """set_mode mutates the mode and re-arms the redraw timer at the mode's rate.
 
-    We assert the re-arm CALL happened and the mode changed — NOT an interval
-    delta (no observable interval difference until IDLE lands).
+    Asserts both the re-arm call AND the interval: IDLE gets the throttled idle
+    interval, LISTENING/BUSY the active interval (ADR-0007 §5, the shared cadence).
     """
     overlay = _built_overlay(monkeypatch)
-    rearms: list[int] = []
+    rearms: list[tuple[int, int]] = []
 
-    def _rec_timer(_h: Any, tid: int, _ms: int) -> int:
-        rearms.append(tid)
+    def _rec_timer(_h: Any, tid: int, ms: int) -> int:
+        rearms.append((tid, ms))
         return tid or 1
 
     monkeypatch.setattr(host_win, "_set_timer", _rec_timer)
@@ -655,7 +655,30 @@ def test_recording_and_busy_set_mode_re_arm_the_timer(monkeypatch: pytest.Monkey
     assert overlay._state is not None and overlay._state["mode"] is HudMode.BUSY
     overlay.set_mode(HudMode.LISTENING)
     assert overlay._state["mode"] is HudMode.LISTENING
-    assert len(rearms) == 2, "each set_mode re-arms the timer"
+    overlay.set_mode(HudMode.IDLE)
+    assert overlay._state["mode"] is HudMode.IDLE
+    assert len(rearms) == 3, "each set_mode re-arms the timer"
+    # BUSY + LISTENING at the active interval; IDLE at the throttled idle interval.
+    assert rearms[0][1] == host_win._ACTIVE_INTERVAL_MS
+    assert rearms[1][1] == host_win._ACTIVE_INTERVAL_MS
+    assert rearms[2][1] == host_win._IDLE_INTERVAL_MS
+    assert host_win._IDLE_INTERVAL_MS > host_win._ACTIVE_INTERVAL_MS, "idle is throttled"
+
+
+def test_interval_ms_selects_idle_vs_active() -> None:
+    """_interval_ms throttles only IDLE (ADR-0007 §5 shared cadence)."""
+    assert host_win._interval_ms(HudMode.IDLE) == host_win._IDLE_INTERVAL_MS
+    assert host_win._interval_ms(HudMode.LISTENING) == host_win._ACTIVE_INTERVAL_MS
+    assert host_win._interval_ms(HudMode.BUSY) == host_win._ACTIVE_INTERVAL_MS
+
+
+def test_set_mode_idle_redraws_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    """set_mode redraws now (not one idle interval later) — the mode flip is visible."""
+    overlay = _built_overlay(monkeypatch)
+    painted: list[str] = []
+    monkeypatch.setattr(host_win, "_paint", lambda *_a, **_k: painted.append("paint"))
+    overlay.set_mode(HudMode.IDLE)
+    assert painted, "set_mode triggers an immediate repaint via the stored tick"
 
 
 def test_wndproc_ref_is_held_on_the_overlay(monkeypatch: pytest.MonkeyPatch) -> None:

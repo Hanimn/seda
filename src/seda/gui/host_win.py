@@ -14,7 +14,9 @@ loads ``ctypes.windll``**. The Option-B render path (:func:`_paint` +
 card + bars into a top-down 32-bit ARGB DIB with ``CompositingModeSourceCopy``,
 the bytes are premultiplied, then ``UpdateLayeredWindow(ULW_ALPHA)`` blits them.
 The three modes' math ports 1:1 from ``WaveformView.drawRect_`` (parity spec
-`docs/specs/windows-hud-parity.md`); ``HudMode.IDLE`` is deferred to #56.
+`docs/specs/windows-hud-parity.md`); ``HudMode.IDLE`` renders the compressed pill
+(the #56 look) at the shared ~10 Hz idle cadence — the panel-shrink itself is a
+follow-up (the pill is centered in the full panel this pass).
 
 **CI-cleanliness invariant.** ``import ctypes`` at module top is fine (stdlib,
 present on Linux), but ``ctypes.WINFUNCTYPE`` does not exist on non-Windows
@@ -42,7 +44,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from seda.notifications import HudMode
+from seda.notifications import (
+    HUD_ACTIVE_HZ,
+    HUD_IDLE_HZ,
+    HUD_IDLE_PILL_H,
+    HUD_IDLE_PILL_W,
+    HudMode,
+    hud_idle_shimmer,
+)
 
 if TYPE_CHECKING:
     from seda.app import AppController
@@ -126,9 +135,11 @@ ULONG_PTR = ctypes.c_size_t
 _PANEL_W, _PANEL_H = 160, 48
 
 # Redraw cadence (ADR-0007 §5) — shared cross-platform policy. ~60 Hz active for
-# LISTENING/BUSY. IDLE's ~10 Hz rate lands with HudMode.IDLE (#56); until then
-# both live modes are "active".
-_ACTIVE_INTERVAL_MS = 16
+# LISTENING/BUSY, throttled to ~10 Hz in IDLE. The rates come from the shared
+# notifications knobs (HUD_ACTIVE_HZ / HUD_IDLE_HZ) so macOS and Windows cannot
+# diverge; here they are turned into SetTimer millisecond intervals.
+_ACTIVE_INTERVAL_MS = round(1000 / HUD_ACTIVE_HZ)  # ~16 ms
+_IDLE_INTERVAL_MS = round(1000 / HUD_IDLE_HZ)  # ~100 ms
 _DISPATCH_QUEUE_MAX = 256  # bounded dispatch_main queue (fail-open E6)
 
 # Pump cadence (ADR-0008 §2): drain messages, service the stop flag, sleep ~5 ms.
@@ -136,13 +147,12 @@ _PUMP_SLEEP_SECONDS = 0.005
 
 
 def _interval_ms(mode: HudMode) -> int:
-    """Redraw interval for *mode* (ADR-0007 §5).
+    """Redraw interval (ms) for *mode* (ADR-0007 §5): idle throttled, else active.
 
-    LISTENING and BUSY are both "active" (~60 Hz). The idle rate hooks in with
-    ``HudMode.IDLE`` once the enum + notifier land.
+    LISTENING and BUSY are both motion-carrying (~60 Hz); IDLE drops to ~10 Hz for
+    its slow shimmer, cutting idle wakeups ~6×. Re-armed on every ``set_mode``.
     """
-    # TODO(#56): HudMode.IDLE -> ~100 ms (~10 Hz) once the idle mode exists.
-    return _ACTIVE_INTERVAL_MS
+    return _IDLE_INTERVAL_MS if mode is HudMode.IDLE else _ACTIVE_INTERVAL_MS
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +272,21 @@ def _fill_bar(gp: Any, g: Any, brush: Any, x: float, cy: float, half: float, bw:
     gp.GdipCreatePath(0, ctypes.byref(path))
     try:
         _add_round_rect_f(gp, path, x, cy - half, float(bw), 2.0 * half, bw / 2.0)
+        gp.GdipFillPath(g, brush, path)
+    finally:
+        gp.GdipDeletePath(path)
+
+
+def _fill_pill(gp: Any, g: Any, brush: Any, cx: float, cy: float, w: float, h: float) -> None:
+    """Fill the IDLE compressed pill: a horizontal capsule centered at ``(cx, cy)``.
+
+    ``w×h`` capsule (cap radius = h/2), the #56 idle look. Same FLOAT rounded-path
+    primitive as :func:`_fill_bar`; the brush carries the shimmer alpha.
+    """
+    path = GpHandle()
+    gp.GdipCreatePath(0, ctypes.byref(path))
+    try:
+        _add_round_rect_f(gp, path, cx - w / 2.0, cy - h / 2.0, w, h, h / 2.0)
         gp.GdipFillPath(g, brush, path)
     finally:
         gp.GdipDeletePath(path)
@@ -824,10 +849,17 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
     """Render the card + bars into the backbuffer (catalog E1).
 
     A 1:1 port of ``WaveformView.drawRect_`` (parity spec Parts 2-3): rounded card
-    (radius 8, black alpha 0.55) then 9 mirror/sweep bars, all constants verbatim
-    from macOS. LISTENING is the default; BUSY is the time-driven sweep; IDLE is
-    deferred to #56. Draws in straight alpha (SourceCopy writes it verbatim);
-    :func:`_blit` premultiplies before ``UpdateLayeredWindow``.
+    (radius 8, black alpha 0.55) then the mode's content. IDLE draws the compressed
+    pill (the #56 look); LISTENING draws the 9 mirror-EQ bars; BUSY the time-driven
+    sweep — all constants verbatim from macOS / the shared knobs. Draws in straight
+    alpha (SourceCopy writes it verbatim); :func:`_blit` premultiplies before
+    ``UpdateLayeredWindow``.
+
+    **Windows IDLE has no panel-shrink this pass** (accepted parity gap): the pill
+    is centered in the full 160×48 window, whereas macOS shrinks the panel to 48×24.
+    The ADR-0007 §5 *cadence* (10 Hz idle) IS honored on both hosts; the shrink is a
+    #56 visual, and doing it correctly under Option B (a sub-rect ULW blit,
+    dimension-matched in one turn) is a self-contained follow-up.
 
     Brushes/paths are created per-frame and freed in ``finally`` so a raising
     fill never leaks a GDI+ handle (60 Hz create/delete is negligible).
@@ -846,6 +878,7 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
 
     card = GpHandle()
     bar = GpHandle()
+    pill = GpHandle()
     path = GpHandle()
     try:
         # 2) CARD: rounded rect, black alpha 0.55. Integer arcs (geometry is integral).
@@ -870,7 +903,14 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
         mode = state["mode"]
         phase = frame / 60.0  # seconds-ish, as on macOS
 
-        if mode == HudMode.BUSY:
+        if mode == HudMode.IDLE:
+            # Idle: a single compressed pill with a faint slow alpha breath (#56).
+            # Shimmer is a shared knob (ADR-0007 §5) so macOS + Windows breathe
+            # identically. Centered in the full panel (no shrink this pass).
+            alpha = hud_idle_shimmer(frame, HudMode.IDLE)
+            gp.GdipCreateSolidFill((round(alpha * 255) << 24) | 0x00FFFFFF, ctypes.byref(pill))
+            _fill_pill(gp, g, pill, w / 2.0, cy, float(HUD_IDLE_PILL_W), float(HUD_IDLE_PILL_H))
+        elif mode == HudMode.BUSY:
             # Busy: a bright band sweeps L->R over a calm baseline (time-driven; no mic).
             speed = 3.2  # bars/sec the head travels
             head = (phase * speed) % (n_bars + 3)  # +3 = gap between sweeps
@@ -912,6 +952,8 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
             gp.GdipDeleteBrush(card)
         if bar:
             gp.GdipDeleteBrush(bar)
+        if pill:
+            gp.GdipDeleteBrush(pill)
 
 
 def _blit(hwnd: Any, backbuffer: dict[str, Any], geom: tuple[int, int, int, int]) -> None:
@@ -1183,7 +1225,7 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
 
         backbuffer["graphics"] = _gdip_create_from_hdc(hdc)  # 6  (C6)
 
-        _paint(backbuffer, state)  # no-op stub in Step 3
+        _paint(backbuffer, state)  # first frame drawn into the DIB (IDLE at startup)
         _blit(hwnd, backbuffer, _placement(w, h))  # 7  first blit, cleared buffer (C7)
 
         # D0: the initial timer arm sits pre-boundary, INSIDE build, so a failure
@@ -1223,14 +1265,24 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
 
     def _set_mode(mode: HudMode) -> None:
         # Runs on the pump thread (marshalled via _dispatch), so mutating _state
-        # is single-threaded. Re-arm the redraw timer for the mode; a failed
-        # re-arm is swallowed (E2 — static/last-frame HUD beats a broken run).
+        # is single-threaded. Re-arm the redraw timer at the mode's rate (ADR-0007
+        # §5: ~10 Hz idle / ~60 Hz active) and redraw immediately so the mode flip
+        # is visible now, not up to one idle interval later. A failed re-arm or
+        # draw is swallowed (E1/E2 — a static/last-frame HUD beats a broken run).
         state["mode"] = mode
         try:
             _set_timer(hwnd, timer_id, _interval_ms(mode))
         except Exception:  # noqa: BLE001
             logger.debug("overlay timer re-arm failed", exc_info=True)
-        # Panel-shrink on active<->idle would go here (E4/E4b) once IDLE exists.
+        try:
+            tick = state.get("tick")
+            if tick is not None:
+                tick()  # immediate repaint at the new mode (analog of setNeedsDisplay_)
+        except Exception:  # noqa: BLE001
+            logger.debug("overlay set_mode redraw failed", exc_info=True)
+        # No panel-shrink on Windows this pass (accepted parity gap): the IDLE pill
+        # renders centered in the full 160x48 window. True 48x24 shrink (a sub-rect
+        # ULW blit, E4/E4b) is a self-contained follow-up; the §5 cadence IS applied.
 
     def _teardown() -> None:
         # Deterministic, idempotent, fail-open teardown (ADR-0008 §4, parity
