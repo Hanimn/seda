@@ -8,8 +8,10 @@ Commands that need global hotkeys are declared as stubs.
 from __future__ import annotations
 
 import json
+import sys
 from enum import IntEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -24,6 +26,23 @@ from seda.config import (
 from seda.diagnostics import Status, run_checks, worst_status
 from seda.errors import ModelUnavailableError, SedaError
 from seda.logging_config import configure_logging
+
+if TYPE_CHECKING:
+    from seda.gui.host import Overlay
+
+# Platform → GUI-host module (ADR-0009 §3). Each host module exposes a
+# ``run_with_overlay``-shaped entry point and its own ``Overlay`` struct; the
+# sibling hosts share only the ``OverlayNotifier`` seam and the ``_hostloop``
+# lifecycle helper. An unknown platform maps to ``None`` → the terminal path,
+# so a platform without a host never even imports one. The ``-> bool`` return
+# of the resolved host is the single fail-open signal ``run`` keys on, produced
+# by the shared ``run_hosted`` helper (identical on every platform).
+_HOST_MODULES = {"darwin": "seda.gui.host", "win32": "seda.gui.host_win"}
+
+
+def _select_host_module(plat: str) -> str | None:
+    """Return the GUI-host module name for *plat*, or ``None`` if unsupported."""
+    return _HOST_MODULES.get(plat)
 
 
 class ExitCode(IntEnum):
@@ -250,35 +269,43 @@ def run(
 
     hosted = False
     if overlay_requested:
-        # On macOS the overlay GUI host owns the main thread and drives the
-        # controller. run_with_overlay() fails open by RETURNING False (non-macOS
-        # or an AppKit setup failure) — in which case we run the controller's own
-        # blocking loop below, exactly as before. Once the host has committed to
-        # the run (AppKit up, controller.start() called), a failure is the
-        # controller's own error and PROPAGATES — we must not fall back and
-        # re-run start(). Only a failure importing the optional host module is
-        # treated as "overlay unavailable".
-        try:
-            from seda.gui.host import Overlay, run_with_overlay
-            from seda.notifications import OverlayNotifier
-        except ImportError:
-            logger.info("overlay host unavailable; running in terminal mode")
+        # Select the GUI host by platform (ADR-0009 §3). An unknown platform →
+        # None → terminal path (the host is never imported). The chosen host
+        # owns the main thread and drives the controller; run_with_overlay()
+        # fails open by RETURNING False (unsupported platform or a toolkit setup
+        # failure) — in which case we run the controller's own blocking loop
+        # below, exactly as before. Once the host has committed to the run
+        # (toolkit up, controller.start() called), a failure is the controller's
+        # own error and PROPAGATES — we must not fall back and re-run start().
+        # Only a failure importing the optional host module is treated as
+        # "overlay unavailable".
+        import importlib
+
+        host_module_name = _select_host_module(sys.platform)
+        if host_module_name is None:
+            logger.info("no overlay host for platform %r; running in terminal mode", sys.platform)
         else:
+            try:
+                host_module = importlib.import_module(host_module_name)
+                from seda.notifications import OverlayNotifier
+            except ImportError:
+                logger.info("overlay host unavailable; running in terminal mode")
+            else:
 
-            def _register(overlay: Overlay) -> None:
-                # Wire the built panel into the fan-out (ADR-0003): RECORDING ->
-                # show + listening mode, BUSY -> show + busy mode (fired on
-                # release), terminal -> hide, all marshalled onto the main thread.
-                notifier.add(
-                    OverlayNotifier(
-                        show=overlay.show,
-                        hide=overlay.hide,
-                        set_mode=overlay.set_mode,
-                        dispatch_main=overlay.dispatch_main,
+                def _register(overlay: Overlay) -> None:
+                    # Wire the built panel into the fan-out (ADR-0003): RECORDING ->
+                    # show + listening mode, BUSY -> show + busy mode (fired on
+                    # release), terminal -> hide, all marshalled onto the main thread.
+                    notifier.add(
+                        OverlayNotifier(
+                            show=overlay.show,
+                            hide=overlay.hide,
+                            set_mode=overlay.set_mode,
+                            dispatch_main=overlay.dispatch_main,
+                        )
                     )
-                )
 
-            hosted = run_with_overlay(controller, register_overlay=_register)
+                hosted = host_module.run_with_overlay(controller, register_overlay=_register)
     if not hosted:
         controller.run()
 
