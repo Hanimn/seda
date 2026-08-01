@@ -45,6 +45,49 @@ def _select_host_module(plat: str) -> str | None:
     return _HOST_MODULES.get(plat)
 
 
+def _silence_benign_semaphore_warning() -> None:
+    """Suppress the benign leaked-semaphore warning any backend-loading path emits.
+
+    Emitted at interpreter shutdown by a native dependency (ctranslate2/
+    faster-whisper spins native worker pools; the multiprocessing
+    resource_tracker then can't account for a semaphore it didn't create). The
+    OS reclaims it — it never affects dictation, and it does not accumulate (one
+    long-lived model per process). See #29.
+
+    Two layers, because the warning can fire in two different interpreters:
+
+    - ``PYTHONWARNINGS`` in the environment — the warning is emitted from the
+      *resource_tracker's own spawned process*, a separate interpreter a parent
+      ``warnings.filterwarnings`` can never reach. That subprocess reads
+      ``PYTHONWARNINGS`` at startup, so seeding the env var **before** the tracker
+      spawns (i.e. before any backend import registers a semaphore) is the only
+      lever that silences it. The env-filter mini-language matches the message by
+      substring, so the ``resource_tracker:`` prefix is as tight as it allows —
+      broader than the regex below, but confined to that one tracker message. Only
+      set if unset, so an operator's own ``PYTHONWARNINGS`` is never clobbered.
+    - ``warnings.filterwarnings`` in *this* process — the surgical #29 filter,
+      scoped to the EXACT message + category + module, catching anything the
+      tracker emits in-process. Do not broaden this filter.
+    """
+    import os
+    import warnings
+
+    _tracker_filter = "ignore:resource_tracker:UserWarning"
+    existing = os.environ.get("PYTHONWARNINGS")
+    if existing is None:
+        os.environ["PYTHONWARNINGS"] = _tracker_filter
+    elif _tracker_filter not in existing:
+        # Append so we never drop the operator's own filters.
+        os.environ["PYTHONWARNINGS"] = f"{existing},{_tracker_filter}"
+
+    warnings.filterwarnings(
+        "ignore",
+        message=r"resource_tracker: There appear to be \d+ leaked semaphore objects",
+        category=UserWarning,
+        module=r"multiprocessing\.resource_tracker",
+    )
+
+
 class ExitCode(IntEnum):
     """Process exit codes (see §20 'Exit codes')."""
 
@@ -217,24 +260,13 @@ def run(
     ),
 ) -> None:
     """Run the background dictation loop."""
-    import warnings
+    # Seed the env-var half of the semaphore-warning filter (#29) before any
+    # backend import can spawn the resource_tracker subprocess it must reach.
+    _silence_benign_semaphore_warning()
 
     from seda.app import AppController
     from seda.config import migration_notice, select_overlay_enabled
     from seda.notifications import ConsoleNotifier, FanOutNotifier
-
-    # Silence a benign, non-deterministic warning emitted at interpreter
-    # shutdown by a native dependency (ctranslate2/faster-whisper spins native
-    # worker pools; the multiprocessing resource_tracker then can't account for
-    # a semaphore it didn't create). The OS reclaims it — it never affects
-    # dictation. Scoped to this EXACT message + category + module so it can
-    # never mask an unrelated leak (see #29). Do not broaden this filter.
-    warnings.filterwarnings(
-        "ignore",
-        message=r"resource_tracker: There appear to be \d+ leaked semaphore objects",
-        category=UserWarning,
-        module=r"multiprocessing\.resource_tracker",
-    )
 
     cfg = _safe_load(config)
     logger = configure_logging(cfg)
@@ -324,6 +356,10 @@ def transcribe(
     config: Path | None = typer.Option(None, "--config", help="Path to a config file."),
 ) -> None:
     """Transcribe an audio file with a local model and emit the transcript."""
+    # Seed the semaphore-warning filter (#29) before the backend import below can
+    # spawn the resource_tracker subprocess the env-var half must reach.
+    _silence_benign_semaphore_warning()
+
     # Deferred imports keep `--help` and the config/doctor commands from paying
     # for numpy/backend import cost on every invocation.
     from seda.audio.loading import load_wav

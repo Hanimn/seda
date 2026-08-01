@@ -7,6 +7,7 @@ touched.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -251,6 +252,7 @@ def test_run_scopes_the_semaphore_warning_filter(
             pass
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
+    monkeypatch.delenv("PYTHONWARNINGS", raising=False)
     cfg = tmp_path / "config.toml"
     cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
 
@@ -259,7 +261,7 @@ def test_run_scopes_the_semaphore_warning_filter(
         result = runner.invoke(app, ["run", "--no-overlay", "--config", str(cfg)])
         assert result.exit_code == 0
 
-        # The exact semaphore message is suppressed...
+        # The exact semaphore message is suppressed in-process...
         assert warnings.filters and any(
             f[0] == "ignore"
             and f[2] is UserWarning
@@ -274,6 +276,72 @@ def test_run_scopes_the_semaphore_warning_filter(
             for f in warnings.filters
             if f[2] is UserWarning
         ), "the filter must not match unrelated warnings"
+
+    # ...and PYTHONWARNINGS is seeded so the resource_tracker SUBPROCESS (which a
+    # parent filter can't reach) inherits the ignore at startup (#29).
+    assert "ignore:resource_tracker:UserWarning" in os.environ.get("PYTHONWARNINGS", "")
+
+
+def test_transcribe_scopes_the_semaphore_warning_filter(
+    tmp_path: Path, make_wav: WavFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`transcribe` installs the SAME two-layer leaked-semaphore filter as `run` (#29)."""
+    import warnings
+
+    wav = make_wav([0, 1000, -1000, 0], sample_rate=16000)
+    cfg = _fake_backend_config(tmp_path)
+    monkeypatch.delenv("PYTHONWARNINGS", raising=False)
+
+    # Snapshot filters so this test doesn't leak state into others.
+    with warnings.catch_warnings():
+        result = runner.invoke(app, ["transcribe", str(wav), "--stdout", "--config", str(cfg)])
+        assert result.exit_code == 0
+
+        # The exact semaphore message is suppressed in-process...
+        assert warnings.filters and any(
+            f[0] == "ignore"
+            and f[2] is UserWarning
+            and f[1] is not None
+            and f[1].search("resource_tracker: There appear to be 3 leaked semaphore objects")
+            for f in warnings.filters
+        ), "transcribe() must install an ignore filter matching the leaked-semaphore message"
+
+        # ...but an unrelated warning is NOT matched by that same filter.
+        assert not any(
+            f[0] == "ignore" and f[1] is not None and f[1].search("some unrelated warning")
+            for f in warnings.filters
+            if f[2] is UserWarning
+        ), "the filter must not match unrelated warnings"
+
+    # ...and PYTHONWARNINGS is seeded for the tracker subprocess, same as run (#29).
+    assert "ignore:resource_tracker:UserWarning" in os.environ.get("PYTHONWARNINGS", "")
+
+
+def test_semaphore_filter_preserves_an_existing_pythonwarnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator's own PYTHONWARNINGS is appended to, never clobbered (#29)."""
+    from seda.cli import _silence_benign_semaphore_warning
+
+    monkeypatch.setenv("PYTHONWARNINGS", "error::DeprecationWarning")
+    _silence_benign_semaphore_warning()
+
+    value = os.environ["PYTHONWARNINGS"]
+    assert "error::DeprecationWarning" in value, "must not drop the operator's filter"
+    assert "ignore:resource_tracker:UserWarning" in value, "must append the tracker ignore"
+
+
+def test_semaphore_filter_is_idempotent_on_pythonwarnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Calling the helper twice does not duplicate the tracker filter in the env (#29)."""
+    from seda.cli import _silence_benign_semaphore_warning
+
+    monkeypatch.delenv("PYTHONWARNINGS", raising=False)
+    _silence_benign_semaphore_warning()
+    _silence_benign_semaphore_warning()
+
+    assert os.environ["PYTHONWARNINGS"].count("ignore:resource_tracker:UserWarning") == 1
 
 
 def test_run_no_overlay_flag_skips_the_host(
