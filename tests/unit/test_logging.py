@@ -15,6 +15,7 @@ from seda.logging_config import (
     configure_logging,
     default_log_path,
     get_logger,
+    log_reveal_target,
 )
 
 
@@ -209,3 +210,26 @@ def test_file_line_is_formatted_not_bare_message(tmp_path: Path) -> None:
     logger.info("hud transitioned to LISTENING")
     line = (tmp_path / "seda.log").read_text()
     assert "INFO seda: hud transitioned to LISTENING" in line
+
+
+# --- log_reveal_target (#90) -----------------------------------------------
+
+
+def test_log_reveal_target_is_the_file_when_it_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the log file exists, reveal targets the file itself (#90)."""
+    monkeypatch.setattr("seda.logging_config.default_log_path", lambda: tmp_path / "seda.log")
+    configure_logging(Config(), log_dir=tmp_path)  # creates seda.log
+    assert log_reveal_target() == tmp_path / "seda.log"
+
+
+def test_log_reveal_target_falls_back_to_dir_when_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no log file yet (fail-open logging), reveal targets the log dir (#90)."""
+    monkeypatch.setattr(
+        "seda.logging_config.default_log_path", lambda: tmp_path / "nope" / "seda.log"
+    )
+    # No configure_logging call, so the file does not exist.
+    assert log_reveal_target() == (tmp_path / "nope")

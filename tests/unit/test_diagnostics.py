@@ -17,6 +17,7 @@ from seda.diagnostics import (
     check_python_version,
     check_wayland,
     check_writable_locations,
+    format_diagnostics,
     run_checks,
     worst_status,
 )
@@ -304,3 +305,29 @@ def test_check_details_never_include_env_values(
     results = run_checks(str(tmp_path / "none.toml"))
     for r in results:
         assert "do-not-log-this" not in r.detail
+
+
+# --- format_diagnostics (#90) ----------------------------------------------
+
+
+def test_format_diagnostics_renders_each_check_and_overall() -> None:
+    """format_diagnostics is the single home for the doctor text (CLI + gui menu, #90)."""
+    results = [
+        CheckResult("Python", Status.PASS, "3.11"),
+        CheckResult("Microphone", Status.WARN, "no default device"),
+    ]
+    text = format_diagnostics(results, Status.WARN)
+    # Each check appears with its status + name + detail.
+    assert "Python" in text and "3.11" in text and "PASS" in text
+    assert "Microphone" in text and "no default device" in text and "WARN" in text
+    # The overall verdict is present.
+    assert "WARN" in text.splitlines()[-1] or "Overall" in text
+
+
+def test_format_diagnostics_matches_cli_doctor_lines() -> None:
+    """The gui Doctor view must read the same as `seda doctor` (#90)."""
+    results = [CheckResult("Configuration", Status.PASS, "loaded and valid")]
+    text = format_diagnostics(results, Status.PASS)
+    # The per-check line format is the CLI's: "[<status>] <name>: <detail>".
+    assert "[PASS] Configuration: loaded and valid" in text
+    assert "Overall: PASS" in text

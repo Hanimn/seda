@@ -92,6 +92,17 @@ def default_log_path() -> Path:
     return user_log_path(APP_NAME, appauthor=False) / "seda.log"
 
 
+def log_reveal_target() -> Path:
+    """Return the path to reveal for the gui "Open Logs" action (#90).
+
+    The log file itself when it exists; otherwise its parent directory (logging
+    is fail-open, so the file may not exist yet — revealing the dir still shows
+    the user where logs live). Pure: no I/O beyond an ``exists()`` probe.
+    """
+    path = default_log_path()
+    return path if path.exists() else path.parent
+
+
 def configure_logging(config: Config, *, log_dir: Path | None = None) -> logging.Logger:
     """Configure and return the application's root logger.
 

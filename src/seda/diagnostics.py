@@ -362,3 +362,15 @@ def worst_status(results: list[CheckResult]) -> Status:
     if any(r.status is Status.WARN for r in results):
         return Status.WARN
     return Status.PASS
+
+
+def format_diagnostics(results: list[CheckResult], overall: Status) -> str:
+    """Render *results* + *overall* as the doctor report text.
+
+    The single home for the human-readable diagnostics format, shared by the
+    ``seda doctor`` CLI command and the ``gui`` menu's Doctor view (#90) so the
+    two never drift. Same per-check line as the CLI: ``[<status>] <name>: <detail>``.
+    """
+    lines = [f"[{result.status.value:>4}] {result.name}: {result.detail}" for result in results]
+    lines.append(f"\nOverall: {overall.value}")
+    return "\n".join(lines)
