@@ -21,6 +21,7 @@ verified end-to-end by the #15 prototype
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import signal
 from collections.abc import Callable
@@ -598,6 +599,14 @@ def _build_settings_controller() -> Any:
             status.setDrawsBackground_(False)
             content.addSubview_(status)
             self._status = status
+
+            # Center on screen. The window is built at origin (0, 0) — the
+            # bottom-left corner in AppKit's coordinate space — so without this
+            # it opens tucked in the corner. center() places it slightly above
+            # the screen's midpoint, the standard macOS position for a fresh
+            # window; harmless if it ever raises, so it stays best-effort.
+            with contextlib.suppress(Exception):
+                win.center()
             self._window = win
 
         def _populate(self) -> None:
