@@ -486,6 +486,7 @@ def _build_status_item(
     the item.
     """
     from AppKit import (
+        NSAlert,
         NSApplication,  # noqa: F401 -- ensures AppKit is up (imported by the loop already)
         NSImage,
         NSMenu,
@@ -493,6 +494,7 @@ def _build_status_item(
         NSObject,
         NSStatusBar,
         NSVariableStatusItemLength,
+        NSWorkspace,
     )
 
     status_bar = NSStatusBar.systemStatusBar()
@@ -522,9 +524,80 @@ def _build_status_item(
             stop_requested["flag"] = True
             _post_wakeup_event(app)
 
+    # Open Logs: reveal the log file (or its dir) in Finder (#90). Best-effort —
+    # a reveal failure is logged, never crashes the menu.
+    class _OpenLogsTarget(NSObject):  # type: ignore[misc]
+        def openLogs_(self, _sender: Any) -> None:  # noqa: N802 -- ObjC selector openLogs:
+            from seda.logging_config import log_reveal_target
+
+            try:
+                target = str(log_reveal_target())
+                NSWorkspace.sharedWorkspace().selectFile_inFileViewerRootedAtPath_(target, "")
+            except Exception:  # noqa: BLE001
+                logger.warning("Open Logs failed", exc_info=True)
+
+    # A tiny main-thread marshaller for actions that must compute off-thread but
+    # present UI on the main thread (dependency-free GCD-to-main path, matching
+    # build_overlay's runner).
+    class _MainThreadRunner(NSObject):  # type: ignore[misc]
+        def runHolder_(self, holder: Any) -> None:  # noqa: N802
+            holder["fn"]()
+
+    runner = _MainThreadRunner.alloc().init()
+
+    # Doctor: run diagnostics (run_checks is CLI-decoupled) and show the same
+    # report the CLI prints, in an NSAlert (#90). Never shells out. The probes run
+    # on a BACKGROUND thread — run_checks does bounded I/O (audio enumeration, a
+    # ~1.5s Ollama HTTP probe when cleanup is enabled) that must not block the
+    # main run loop (HUD redraw + the SIGINT/SIGTERM pump). The alert is then
+    # marshalled back to the main thread, where the accessory app is activated
+    # first so the modal comes to the front (an accessory app's modal is not
+    # reliably raised otherwise — the no-focus-steal invariant governs the passive
+    # HUD, not an explicit user-initiated menu action).
+    class _DoctorTarget(NSObject):  # type: ignore[misc]
+        def runDoctor_(self, _sender: Any) -> None:  # noqa: N802 -- ObjC selector runDoctor:
+            import threading
+
+            from seda.diagnostics import format_diagnostics, run_checks, worst_status
+
+            def _work() -> None:
+                try:
+                    results = run_checks(None)
+                    text = format_diagnostics(results, worst_status(results))
+                except Exception:  # noqa: BLE001
+                    logger.warning("Doctor checks failed", exc_info=True)
+                    return
+
+                def _present() -> None:
+                    try:
+                        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                        alert = NSAlert.alloc().init()
+                        alert.setMessageText_("Seda diagnostics")
+                        alert.setInformativeText_(text)
+                        alert.runModal()
+                    except Exception:  # noqa: BLE001
+                        logger.warning("Doctor view failed", exc_info=True)
+
+                runner.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "runHolder:", {"fn": _present}, False
+                )
+
+            threading.Thread(target=_work, name="seda-doctor", daemon=True).start()
+
     quit_target = _QuitTarget.alloc().init()
+    open_logs_target = _OpenLogsTarget.alloc().init()
+    doctor_target = _DoctorTarget.alloc().init()
 
     menu = NSMenu.alloc().init()
+    logs_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Open Logs", "openLogs:", "")
+    logs_item.setTarget_(open_logs_target)
+    menu.addItem_(logs_item)
+    doctor_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Diagnostics…", "runDoctor:", ""
+    )
+    doctor_item.setTarget_(doctor_target)
+    menu.addItem_(doctor_item)
+    menu.addItem_(NSMenuItem.separatorItem())
     quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit Seda", "quit:", "q")
     quit_item.setTarget_(quit_target)
     menu.addItem_(quit_item)
@@ -537,9 +610,10 @@ def _build_status_item(
         register_status(_apply)
 
     def _teardown() -> None:
-        # Keep quit_target referenced until teardown so the menu action never
-        # dispatches into a freed object; drop the item from the bar.
-        _ = quit_target
+        # Keep the menu-action targets + the main-thread runner referenced until
+        # teardown so a menu action never dispatches into a freed ObjC object;
+        # drop the item from the bar.
+        _ = (quit_target, open_logs_target, doctor_target, runner)
         status_bar.removeStatusItem_(item)
 
     return _teardown

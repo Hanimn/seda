@@ -24,7 +24,7 @@ from seda.config import (
     load_config,
     render_toml,
 )
-from seda.diagnostics import Status, run_checks, worst_status
+from seda.diagnostics import Status, format_diagnostics, run_checks, worst_status
 from seda.errors import ModelUnavailableError, SedaError
 from seda.logging_config import configure_logging, get_logger
 
@@ -165,9 +165,7 @@ def doctor(
         }
         typer.echo(json.dumps(payload, indent=2))
     else:
-        for result in results:
-            typer.echo(f"[{result.status.value:>4}] {result.name}: {result.detail}")
-        typer.echo(f"\nOverall: {overall.value}")
+        typer.echo(format_diagnostics(results, overall))
 
     # A failing check is the only condition that yields a non-zero exit;
     # WARN/SKIP are informational and must not break scripted callers. A
