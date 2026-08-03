@@ -9,6 +9,24 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _isolate_log_dir(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redirect the default log file into a temp dir for every test.
+
+    ``configure_logging`` (called by ``seda run``/``transcribe`` with no explicit
+    ``log_dir``) resolves its file via ``default_log_path()``. Without this, any
+    test that invokes those commands would create/rotate a real file under the
+    user log dir (``~/Library/Logs/seda`` etc.) — a filesystem side effect that
+    also broke on some CI runners. Point it at a throwaway dir so tests never
+    touch the real location; tests that pass ``log_dir`` explicitly are unaffected.
+    """
+    log_dir = tmp_path_factory.mktemp("seda-logs")
+    monkeypatch.setattr("seda.logging_config.default_log_path", lambda: log_dir / "seda.log")
+
+
 # A factory that writes a PCM WAV file and returns its path. Signature:
 # make_wav(frames: list[int], *, sample_rate=16000, channels=1, width=2) -> Path
 WavFactory = Callable[..., Path]
