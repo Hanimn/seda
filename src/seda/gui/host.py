@@ -36,6 +36,8 @@ from seda.notifications import (
     HudMode,
     hud_idle_shimmer,
     hud_redraw_hz,
+    status_label,
+    status_symbol,
 )
 
 if TYPE_CHECKING:
@@ -406,17 +408,163 @@ def _run_appkit_loop(
     _run_appkit_host(controller, app, overlay, register_overlay)
 
 
+def run_with_menu_bar(
+    controller: AppController,
+    *,
+    build: Callable[[Callable[[], float]], Overlay] | None = None,
+    register_overlay: Callable[[Overlay], None] | None = None,
+    register_status: Callable[[Callable[[HudMode], None]], None] | None = None,
+    platform: str | None = None,
+) -> bool:
+    """Run *controller* under the macOS menu-bar app (status item + Quit) — issue #87.
+
+    Like :func:`run_with_overlay` but the AppKit loop also brings up an
+    ``NSStatusBar`` item showing live dictation state. Reuses the same
+    :func:`build_overlay` factory and the shared fail-open boundary
+    (:func:`seda.gui._hostloop.run_hosted`); only the ``run_loop`` differs.
+
+    ``register_status`` is called on the main thread, once the item exists, with
+    an ``apply: Callable[[HudMode], None]`` sink bound to the live status item —
+    ``cli.gui`` wires it into the composed ``set_mode`` fan-out so the item tracks
+    the same ``HudMode`` the HUD does. Returns ``True`` if the host took over and
+    ran to shutdown; ``False`` (fail-open) only when unsupported (non-macOS) or an
+    AppKit build failure — ``cli.gui`` treats ``False`` as a hard error (unlike
+    ``run``, the menu-bar app has nothing to degrade into).
+    """
+    from seda.gui._hostloop import run_hosted
+
+    build_fn = build if build is not None else build_overlay
+
+    def _loop(c: AppController, o: Overlay, reg: Callable[[Overlay], None] | None) -> None:
+        _run_appkit_menu_bar_loop(c, o, reg, register_status)
+
+    return run_hosted(
+        controller,
+        supports=lambda plat: plat == "darwin",
+        build=build_fn,
+        run_loop=_loop,
+        register_overlay=register_overlay,
+        platform=platform,
+    )
+
+
+def _run_appkit_menu_bar_loop(
+    controller: AppController,
+    overlay: Overlay,
+    register_overlay: Callable[[Overlay], None] | None,
+    register_status: Callable[[Callable[[HudMode], None]], None] | None,
+) -> None:
+    """macOS ``run_loop`` body for :func:`run_with_menu_bar` (past the fail-open boundary).
+
+    Same as :func:`_run_appkit_loop` but passes a ``build_extra`` that creates the
+    ``NSStatusBar`` item inside the host's owned main thread.
+    """
+    from AppKit import NSApplication
+
+    app = NSApplication.sharedApplication()
+
+    def _build_extra(app_: Any, stop_requested: dict[str, bool]) -> Callable[[], None]:
+        return _build_status_item(app_, stop_requested, register_status)
+
+    _run_appkit_host(controller, app, overlay, register_overlay, build_extra=_build_extra)
+
+
+def _build_status_item(
+    app: Any,
+    stop_requested: dict[str, bool],
+    register_status: Callable[[Callable[[HudMode], None]], None] | None,
+) -> Callable[[], None]:
+    """Create the ``NSStatusBar`` item + menu (Quit) and wire live status — issue #87.
+
+    Runs on the main thread inside :func:`_run_appkit_host`. AppKit is imported
+    here (never at module top) so this module stays importable on non-macOS / in
+    CI. The item's title comes from :func:`status_label` and its glyph from
+    :func:`status_symbol` (image swap best-effort — a missing symbol degrades to
+    text-only, never a crash). Quit routes through the existing shutdown path by
+    flipping ``stop_requested["flag"]`` + posting a wakeup, so the pump does
+    ``controller.shutdown() -> app.stop_``. Returns a teardown thunk that removes
+    the item.
+    """
+    from AppKit import (
+        NSApplication,  # noqa: F401 -- ensures AppKit is up (imported by the loop already)
+        NSImage,
+        NSMenu,
+        NSMenuItem,
+        NSObject,
+        NSStatusBar,
+        NSVariableStatusItemLength,
+    )
+
+    status_bar = NSStatusBar.systemStatusBar()
+    item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
+
+    def _apply(mode: HudMode) -> None:
+        # Runs on the main thread (the composed set_mode is marshalled via the
+        # overlay's dispatch_main). Set the title always; set the glyph best-effort.
+        button = item.button()
+        if button is None:
+            return
+        button.setTitle_(status_label(mode))
+        try:
+            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                status_symbol(mode), status_label(mode)
+            )
+            if image is not None:
+                button.setImage_(image)
+        except Exception:  # noqa: BLE001
+            logger.debug("status-item glyph update failed; text-only", exc_info=True)
+
+    # Quit target: an NSObject exposing an action that requests stop through the
+    # EXISTING pump path (no new shutdown logic). Held on the item so it outlives
+    # this function (the menu item's target is a weak ref in AppKit).
+    class _QuitTarget(NSObject):  # type: ignore[misc]
+        def quit_(self, _sender: Any) -> None:  # noqa: N802 -- ObjC selector quit:
+            stop_requested["flag"] = True
+            _post_wakeup_event(app)
+
+    quit_target = _QuitTarget.alloc().init()
+
+    menu = NSMenu.alloc().init()
+    quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit Seda", "quit:", "q")
+    quit_item.setTarget_(quit_target)
+    menu.addItem_(quit_item)
+    item.setMenu_(menu)
+
+    # Seed the initial glyph/title and hand the apply sink to cli.gui so it can be
+    # composed into set_mode. The sink is only valid now that the item exists.
+    _apply(HudMode.IDLE)
+    if register_status is not None:
+        register_status(_apply)
+
+    def _teardown() -> None:
+        # Keep quit_target referenced until teardown so the menu action never
+        # dispatches into a freed object; drop the item from the bar.
+        _ = quit_target
+        status_bar.removeStatusItem_(item)
+
+    return _teardown
+
+
 def _run_appkit_host(
     controller: AppController,
     app: Any,
     overlay: Overlay,
     register_overlay: Callable[[Overlay], None] | None,
+    *,
+    build_extra: Callable[[Any, dict[str, bool]], Callable[[], None]] | None = None,
 ) -> None:
     """Own the main thread with AppKit and drive *controller* (macOS only).
 
     Assumes AppKit is available and *overlay* is already built (the fail-open
     boundary is in :func:`run_with_overlay`). Installs signal handlers, starts
     the controller, and blocks in ``NSApplication.run()``.
+
+    ``build_extra`` (the ``gui`` path only) is an optional main-thread hook that
+    adds an extra surface — the ``NSStatusBar`` menu-bar item — inside this owned
+    run loop. It is called with ``(app, stop_requested)`` after the warm calls and
+    before ``controller.start()``, and returns a ``teardown_extra`` callable run in
+    the ``finally:`` alongside ``overlay.teardown()``. When ``None`` (the ``run``
+    path) nothing extra is built and the behavior is unchanged.
     """
     if register_overlay is not None:
         register_overlay(overlay)
@@ -472,6 +620,22 @@ def _run_appkit_host(
     _warm_input_source()
     _warm_accessibility_trust()
 
+    # gui path: build the extra main-thread surface (the NSStatusBar item) now —
+    # after warming, before controller.start(), on the owned main thread. Fail-open
+    # WITHIN macOS: a status-item failure must never break dictation, so a raising
+    # build_extra is swallowed and its teardown becomes a no-op. Returns the
+    # teardown thunk run in the finally: below.
+    def _no_teardown() -> None:
+        return None
+
+    teardown_extra: Callable[[], None] = _no_teardown
+    if build_extra is not None:
+        try:
+            teardown_extra = build_extra(app, stop_requested)
+        except Exception:  # noqa: BLE001
+            logger.warning("menu-bar status item setup failed; continuing", exc_info=True)
+            teardown_extra = _no_teardown
+
     # Tear the overlay down on EVERY exit from the run loop — normal
     # signal-driven stop, and any exception propagating out of controller.start()
     # or app.run() (a crash). Without this the HUD panel can linger on screen
@@ -494,6 +658,13 @@ def _run_appkit_host(
             overlay.teardown()
         except Exception:  # noqa: BLE001
             logger.warning("overlay teardown failed during shutdown", exc_info=True)
+        # Remove the menu-bar status item last (gui path). Guarded so a lingering
+        # item is the only failure mode, never a masked crash (the status-item
+        # analogue of the #37/#38 lingering-HUD invariant).
+        try:
+            teardown_extra()
+        except Exception:  # noqa: BLE001
+            logger.warning("menu-bar status item teardown failed during shutdown", exc_info=True)
 
 
 def _schedule_pump(interval: float, callback: Callable[[Any], None]) -> Any:

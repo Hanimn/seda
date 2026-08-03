@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from enum import IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,10 +26,13 @@ from seda.config import (
 )
 from seda.diagnostics import Status, run_checks, worst_status
 from seda.errors import ModelUnavailableError, SedaError
-from seda.logging_config import configure_logging
+from seda.logging_config import configure_logging, get_logger
 
 if TYPE_CHECKING:
+    from seda.app import AppController
+    from seda.config import Config
     from seda.gui.host import Overlay
+    from seda.notifications import FanOutNotifier
 
 # Platform → GUI-host module (ADR-0009 §3). Each host module exposes a
 # ``run_with_overlay``-shaped entry point and its own ``Overlay`` struct; the
@@ -240,6 +244,31 @@ def config_show_effective(
 # --- Commands declared but not implemented in Phase 0 -----------------------
 
 
+def _build_controller(
+    config: Path | None, *, no_paste: bool, no_cleanup: bool
+) -> tuple[AppController, FanOutNotifier, Config]:
+    """Shared Phase-1 wiring for ``run`` and ``gui`` (ADR-0003).
+
+    Loads config, configures logging, and builds the ``AppController`` behind a
+    ``FanOutNotifier([ConsoleNotifier])`` so the overlay (and, for ``gui``, the
+    status item) can be added as further sinks. Returns ``(controller, notifier,
+    cfg)`` — the notifier fan-out is returned so the caller can ``.add`` more
+    sinks, and ``cfg`` so the caller can read overlay/notification settings.
+    """
+    from seda.app import AppController
+    from seda.notifications import ConsoleNotifier, FanOutNotifier
+
+    cfg = _safe_load(config)
+    configure_logging(cfg)
+    # ``--no-cleanup`` force-disables cleanup; otherwise the config flag decides.
+    cleanup_enabled = None if not no_cleanup else False
+    notifier = FanOutNotifier([ConsoleNotifier(enabled=cfg.notifications.console_enabled)])
+    controller = AppController(
+        cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled, notifier=notifier
+    )
+    return controller, notifier, cfg
+
+
 @app.command()
 def run(
     config: Path | None = typer.Option(None, "--config", help="Path to a config file."),
@@ -264,21 +293,9 @@ def run(
     # backend import can spawn the resource_tracker subprocess it must reach.
     _silence_benign_semaphore_warning()
 
-    from seda.app import AppController
     from seda.config import migration_notice, select_overlay_enabled
-    from seda.notifications import ConsoleNotifier, FanOutNotifier
 
-    cfg = _safe_load(config)
-    logger = configure_logging(cfg)
-    # ``--no-cleanup`` force-disables cleanup; otherwise the config flag decides.
-    cleanup_enabled = None if not no_cleanup else False
-
-    # The controller's notifier is a fan-out so the overlay can be added as a
-    # second notifier (ADR-0003). Console is always present.
-    notifier = FanOutNotifier([ConsoleNotifier(enabled=cfg.notifications.console_enabled)])
-    controller = AppController(
-        cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled, notifier=notifier
-    )
+    controller, notifier, cfg = _build_controller(config, no_paste=no_paste, no_cleanup=no_cleanup)
 
     # Surface the macOS Accessibility permission gap up front (both run paths
     # block below). Without it, pynput installs its event tap but receives no
@@ -293,6 +310,7 @@ def run(
     if _notice is not None:
         _err(f"notice: {_notice}")
 
+    logger = get_logger()
     # Resolve whether the overlay is *requested* (ADR-0004): --no-overlay >
     # explicit config > platform. Even when requested, the GUI host still fails
     # open if AppKit is unavailable (ADR-0001), so a non-macOS request is
@@ -340,6 +358,78 @@ def run(
                 hosted = host_module.run_with_overlay(controller, register_overlay=_register)
     if not hosted:
         controller.run()
+
+
+@app.command()
+def gui(
+    config: Path | None = typer.Option(None, "--config", help="Path to a config file."),
+    no_paste: bool = typer.Option(
+        False,
+        "--no-paste",
+        help="Copy the transcript to the clipboard without simulating paste.",
+    ),
+    no_cleanup: bool = typer.Option(
+        False,
+        "--no-cleanup",
+        help="Disable optional LLM cleanup for this run, regardless of config.",
+    ),
+) -> None:
+    """Run the macOS menu-bar app (status item + Quit)."""
+    _silence_benign_semaphore_warning()
+
+    # gui's only feature is the NSStatusBar item, so off-macOS there is nothing to
+    # degrade into — error clearly and point at `run` (unlike run's fail-open).
+    if sys.platform != "darwin":
+        _err("seda gui is macOS-only; use `seda run` for terminal dictation.")
+        raise typer.Exit(code=1)
+
+    from seda.config import migration_notice
+
+    controller, notifier, _cfg = _build_controller(config, no_paste=no_paste, no_cleanup=no_cleanup)
+    _warn_if_accessibility_untrusted()
+    _notice = migration_notice()
+    if _notice is not None:
+        _err(f"notice: {_notice}")
+
+    import seda.gui.host as host  # lazy — AppKit only touched inside the loop
+    from seda.notifications import HudMode, OverlayNotifier
+
+    # The status item's apply sink only exists once the item is built (inside the
+    # host loop). A mutable holder lets the composed set_mode reach it; a mode that
+    # arrives before the item exists is a harmless no-op that self-heals on the next
+    # event (mirrors the HUD's one-shot show latch).
+    status: dict[str, Callable[[HudMode], None]] = {"apply": lambda _m: None}
+
+    def _register_status(apply: Callable[[HudMode], None]) -> None:
+        status["apply"] = apply
+
+    def _register_overlay(overlay: Overlay) -> None:
+        # Compose ONE set_mode that fans the same HudMode to the HUD and the status
+        # item. The event->HudMode mapping stays single-sourced in OverlayNotifier;
+        # both surfaces run in its single marshalled main-thread turn (ADR-0003).
+        def _set_mode(mode: HudMode) -> None:
+            overlay.set_mode(mode)
+            status["apply"](mode)
+
+        notifier.add(
+            OverlayNotifier(
+                show=overlay.show,
+                hide=overlay.hide,
+                set_mode=_set_mode,
+                dispatch_main=overlay.dispatch_main,
+            )
+        )
+
+    hosted = host.run_with_menu_bar(
+        controller,
+        register_overlay=_register_overlay,
+        register_status=_register_status,
+    )
+    if not hosted:
+        # macOS but AppKit genuinely failed to build (fail-open inside run_hosted).
+        # gui has nothing to fall back INTO — surface it rather than run headless.
+        _err("could not start the macOS menu-bar app (AppKit unavailable).")
+        raise typer.Exit(code=1)
 
 
 @app.command()
