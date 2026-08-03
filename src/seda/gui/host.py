@@ -537,13 +537,15 @@ def _build_status_item(
                 logger.warning("Open Logs failed", exc_info=True)
 
     # A tiny main-thread marshaller for actions that must compute off-thread but
-    # present UI on the main thread (dependency-free GCD-to-main path, matching
-    # build_overlay's runner).
-    class _MainThreadRunner(NSObject):  # type: ignore[misc]
+    # present UI on the main thread (dependency-free GCD-to-main path). Named
+    # distinctly from build_overlay's runner: ObjC classes register GLOBALLY by
+    # name, so two classes sharing a name in one process raise
+    # "overriding existing Objective-C class" — which broke the whole menu build.
+    class _StatusItemRunner(NSObject):  # type: ignore[misc]
         def runHolder_(self, holder: Any) -> None:  # noqa: N802
             holder["fn"]()
 
-    runner = _MainThreadRunner.alloc().init()
+    runner = _StatusItemRunner.alloc().init()
 
     # Doctor: run diagnostics (run_checks is CLI-decoupled) and show the same
     # report the CLI prints, in an NSAlert (#90). Never shells out. The probes run
