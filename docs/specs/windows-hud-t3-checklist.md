@@ -46,18 +46,23 @@ game set to **Exclusive Fullscreen** (not borderless).
       dim card behind them — two transparencies in one window at once (the Option-B property
       Option A cannot do).
 - [ ] **Three modes read as one widget changing state**, not a swap:
-  - [ ] **IDLE** — compressed pill in the shrunk panel (once #56 lands; until then IDLE renders
-        as the listening layout — note it, don't fail it).
+  - [ ] **IDLE** — a compressed pill in the **shrunk 48×24 chip**, breathing slowly (~2.6 s alpha
+        pulse). The chip sits **centred where the 160×48 band was** (same centre, not dropped to a
+        corner or the taskbar edge). (#56 look + #79 shrink — PR #78/#82.)
   - [ ] **LISTENING** — mirror-EQ bars track your voice; quiet speech still moves them; a
         silent HUD is flat and still (no shimmering floor).
   - [ ] **BUSY** — a bright band sweeps L→R over a calm baseline; purely time-driven (no mic).
+- [ ] **Shrink/grow transitions are clean (#79).** Drive IDLE→LISTENING (grow 48×24→160×48) and
+      LISTENING/BUSY→IDLE (shrink 160×48→48×24): the panel resizes **in one frame, no tear, no
+      flash of the old size, no stale bars left in the chip corner**. (Option B: the ULW `psize`
+      is the resize — draw + size in one turn.)
 - [ ] **Smooth animation, no tearing/flicker** at the ~60 Hz active rate.
 
 ### Lifecycle
 - [ ] **Persistent across dictations.** Record → release → record again: the HUD stays up and
       switches mode with no flash / no rebuild between cycles.
 - [ ] **Sane idle CPU.** With the HUD shown but idle, CPU is low (the throttled redraw, not a
-      busy-spin). Once #56 lands, IDLE should drop to ~10 Hz.
+      busy-spin) — IDLE drops to ~10 Hz (PR #78).
 
 ### Teardown (the #37/#38 property, under Option B)
 - [ ] **Gone after normal quit.** Quit `seda` normally — the HUD disappears immediately, no
