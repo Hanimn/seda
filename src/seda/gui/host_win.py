@@ -15,8 +15,9 @@ card + bars into a top-down 32-bit ARGB DIB with ``CompositingModeSourceCopy``,
 the bytes are premultiplied, then ``UpdateLayeredWindow(ULW_ALPHA)`` blits them.
 The three modes' math ports 1:1 from ``WaveformView.drawRect_`` (parity spec
 `docs/specs/windows-hud-parity.md`); ``HudMode.IDLE`` renders the compressed pill
-(the #56 look) at the shared ~10 Hz idle cadence — the panel-shrink itself is a
-follow-up (the pill is centered in the full panel this pass).
+(the #56 look) at the shared ~10 Hz idle cadence, shrinking the visible window to
+the 48×24 chip via a top-left sub-rect ``UpdateLayeredWindow`` blit (Option B, no
+DIB realloc — see :func:`_mode_size`).
 
 **CI-cleanliness invariant.** ``import ctypes`` at module top is fine (stdlib,
 present on Linux), but ``ctypes.WINFUNCTYPE`` does not exist on non-Windows
@@ -46,7 +47,11 @@ from typing import TYPE_CHECKING, Any
 
 from seda.notifications import (
     HUD_ACTIVE_HZ,
+    HUD_ACTIVE_PANEL_H,
+    HUD_ACTIVE_PANEL_W,
     HUD_IDLE_HZ,
+    HUD_IDLE_PANEL_H,
+    HUD_IDLE_PANEL_W,
     HUD_IDLE_PILL_H,
     HUD_IDLE_PILL_W,
     HudMode,
@@ -131,8 +136,13 @@ BAR_ARGB = (BAR_ALPHA << 24) | 0xFFFFFF  # 0xEBFFFFFF
 GpHandle = ctypes.c_void_p
 ULONG_PTR = ctypes.c_size_t
 
-# Panel geometry (1:1 with macOS build_overlay; parity spec Part 2).
-_PANEL_W, _PANEL_H = 160, 48
+# Panel geometry (1:1 with macOS build_overlay; parity spec Part 2). The DIB is
+# always allocated at the active _PANEL_W×_PANEL_H; IDLE shrinks the *visible*
+# window to _IDLE_W×_IDLE_H by blitting only that top-left sub-rect (Option B —
+# no DIB realloc, see _mode_size / _tick). Sizes come from the shared notifications
+# knobs so macOS and Windows share one geometry family (they cannot diverge).
+_PANEL_W, _PANEL_H = HUD_ACTIVE_PANEL_W, HUD_ACTIVE_PANEL_H  # 160, 48
+_IDLE_W, _IDLE_H = HUD_IDLE_PANEL_W, HUD_IDLE_PANEL_H  # 48, 24
 
 # Redraw cadence (ADR-0007 §5) — shared cross-platform policy. ~60 Hz active for
 # LISTENING/BUSY, throttled to ~10 Hz in IDLE. The rates come from the shared
@@ -153,6 +163,20 @@ def _interval_ms(mode: HudMode) -> int:
     its slow shimmer, cutting idle wakeups ~6×. Re-armed on every ``set_mode``.
     """
     return _IDLE_INTERVAL_MS if mode is HudMode.IDLE else _ACTIVE_INTERVAL_MS
+
+
+def _mode_size(mode: HudMode) -> tuple[int, int]:
+    """On-screen panel size (px) for *mode* — the single source of truth for the
+    IDLE shrink (parity spec Part 4 "Panel-shrink"; macOS host ``_set_mode``).
+
+    IDLE shrinks to the 48×24 chip; every active mode fills the 160×48 band. The
+    DIB is *always* ``_PANEL_W×_PANEL_H`` (never reallocated); IDLE simply blits
+    its top-left ``_IDLE_W×_IDLE_H`` sub-rect (Option B). Both :func:`_paint` and
+    :func:`_blit` are fed the *same* tuple in one tick so draw-size and blit-size
+    can never disagree — the shrink is dimension-matched and cannot tear. Any
+    non-IDLE (or unexpected) mode falls to the active size, a safe fail-open default.
+    """
+    return (_IDLE_W, _IDLE_H) if mode is HudMode.IDLE else (_PANEL_W, _PANEL_H)
 
 
 # ---------------------------------------------------------------------------
@@ -845,21 +869,21 @@ def _gdip_create_from_hdc(hdc: Any) -> Any:
     return g
 
 
-def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
-    """Render the card + bars into the backbuffer (catalog E1).
+def _paint(backbuffer: dict[str, Any], state: dict[str, Any], size: tuple[int, int]) -> None:
+    """Render the card + mode content into the top-left ``size`` region (catalog E1).
 
     A 1:1 port of ``WaveformView.drawRect_`` (parity spec Parts 2-3): rounded card
-    (radius 8, black alpha 0.55) then the mode's content. IDLE draws the compressed
-    pill (the #56 look); LISTENING draws the 9 mirror-EQ bars; BUSY the time-driven
-    sweep — all constants verbatim from macOS / the shared knobs. Draws in straight
-    alpha (SourceCopy writes it verbatim); :func:`_blit` premultiplies before
-    ``UpdateLayeredWindow``.
+    (black alpha 0.55) then the mode's content. IDLE draws the compressed pill (the
+    #56 look) inside the shrunk 48×24 chip; LISTENING draws the 9 mirror-EQ bars;
+    BUSY the time-driven sweep — all constants verbatim from macOS / the shared
+    knobs. Draws in straight alpha (SourceCopy writes it verbatim); :func:`_blit`
+    premultiplies before ``UpdateLayeredWindow``.
 
-    **Windows IDLE has no panel-shrink this pass** (accepted parity gap): the pill
-    is centered in the full 160×48 window, whereas macOS shrinks the panel to 48×24.
-    The ADR-0007 §5 *cadence* (10 Hz idle) IS honored on both hosts; the shrink is a
-    #56 visual, and doing it correctly under Option B (a sub-rect ULW blit,
-    dimension-matched in one turn) is a self-contained follow-up.
+    ``size`` is the *mode footprint* (:func:`_mode_size`), NOT the DIB size: the DIB
+    is always 160×48, but IDLE draws (and blits) only its top-left 48×24 sub-rect so
+    the visible window shrinks (parity spec Part 4 "Panel-shrink", Option B — no
+    realloc). The whole DIB is still cleared each frame, so stale active-mode pixels
+    outside the chip can never bleed into the blitted region.
 
     Brushes/paths are created per-frame and freed in ``finally`` so a raising
     fill never leaks a GDI+ handle (60 Hz create/delete is negligible).
@@ -869,11 +893,15 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
     n = _n()
     gp = n.gdiplus
     g = backbuffer["graphics"]
-    w = backbuffer["w"]
-    h = backbuffer["h"]
+    # Draw to the mode footprint, not the DIB size (backbuffer["w"/"h"] is always
+    # 160×48). IDLE => 48×24 top-left sub-rect; active => full 160×48.
+    w, h = size
+    mode = state["mode"]
 
-    # 1) Clear to fully transparent (SourceCopy writes 0x00000000 verbatim). Pixels
-    #    we never draw stay invisible; premultiply of a==0 leaves 0,0,0,0.
+    # 1) Clear the WHOLE DIB to fully transparent (SourceCopy writes 0x00000000
+    #    verbatim), even when only the top-left sub-rect is blitted — this wipes
+    #    any prior active-mode pixels so a BUSY->IDLE shrink shows a clean chip.
+    #    Premultiply of a==0 leaves 0,0,0,0, so undrawn pixels stay invisible.
     gp.GdipGraphicsClear(g, 0x00000000)
 
     card = GpHandle()
@@ -881,9 +909,12 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
     pill = GpHandle()
     path = GpHandle()
     try:
-        # 2) CARD: rounded rect, black alpha 0.55. Integer arcs (geometry is integral).
+        # 2) CARD: rounded rect sized to the mode footprint, black alpha 0.55. IDLE
+        #    uses a fully-rounded (radius = h/2) chip; active keeps the radius-8 band.
+        #    Integer arcs (geometry is integral).
         gp.GdipCreatePath(0, ctypes.byref(path))  # FillMode Alternate
-        _add_round_rect_i(gp, path, 0, 0, w, h, 8)
+        radius = h // 2 if mode is HudMode.IDLE else 8
+        _add_round_rect_i(gp, path, 0, 0, w, h, radius)
         gp.GdipCreateSolidFill(CARD_ARGB, ctypes.byref(card))
         gp.GdipFillPath(g, card, path)
         gp.GdipDeletePath(path)
@@ -900,13 +931,12 @@ def _paint(backbuffer: dict[str, Any], state: dict[str, Any]) -> None:
         cy = h / 2.0
         span = h * 0.42  # half-height at full amplitude
         frame = state["frame"]
-        mode = state["mode"]
         phase = frame / 60.0  # seconds-ish, as on macOS
 
         if mode == HudMode.IDLE:
-            # Idle: a single compressed pill with a faint slow alpha breath (#56).
-            # Shimmer is a shared knob (ADR-0007 §5) so macOS + Windows breathe
-            # identically. Centered in the full panel (no shrink this pass).
+            # Idle: a single compressed pill with a faint slow alpha breath (#56),
+            # centred in the 48×24 chip. Shimmer is a shared knob (ADR-0007 §5) so
+            # macOS + Windows breathe identically.
             alpha = hud_idle_shimmer(frame, HudMode.IDLE)
             gp.GdipCreateSolidFill((round(alpha * 255) << 24) | 0x00FFFFFF, ctypes.byref(pill))
             _fill_pill(gp, g, pill, w / 2.0, cy, float(HUD_IDLE_PILL_W), float(HUD_IDLE_PILL_H))
@@ -1101,12 +1131,20 @@ def _sleep(seconds: float) -> None:
 
 
 def _placement(w: int, h: int) -> tuple[int, int, int, int]:
-    """Bottom-centre placement rect on the primary monitor (parity spec Part 2).
+    """Bottom-centre placement rect on the primary monitor (parity spec Part 2/4).
 
-    Win32 origin is top-left, so ``y = workArea.bottom - PANEL_H - 80`` (the
-    macOS ``y=80``-from-bottom, flipped). A runtime geometry-query failure (E7)
-    is swallowed and the **last-good** work area is reused — the HUD keeps its
-    last position rather than vanishing.
+    The panel is horizontally centred on the work area and its centre is held at
+    the fixed *active-panel* centre, so a shrunk IDLE chip recentres on the 160×48
+    active footprint rather than dropping to the taskbar edge — the Win32 mirror of
+    macOS ``_set_mode`` (host.py: ``new_x = center_x - new_w/2``; ``new_y =
+    active_bottom_y + (ACTIVE_H - new_h)/2``). Win32 origin is top-left, so the
+    macOS ``y=80``-from-bottom becomes ``bottom - 80`` and the vertical centring is
+    measured downward from the active band's top. At ``w,h == _PANEL_W,_PANEL_H``
+    this reduces exactly to the shipped active placement (``x = left +
+    ((right-left)-160)//2``; ``y = bottom-48-80``), so LISTENING/BUSY never move.
+
+    A runtime geometry-query failure (E7) is swallowed and the **last-good** work
+    area is reused — the HUD keeps its last position rather than vanishing.
     """
     global _last_work_area
     try:
@@ -1114,8 +1152,14 @@ def _placement(w: int, h: int) -> tuple[int, int, int, int]:
     except Exception:  # noqa: BLE001
         logger.debug("monitor geometry query failed; keeping last position", exc_info=True)
     left, _top, right, bottom = _last_work_area
+    # Active footprint anchors (the fixed centre the chip recentres on):
+    active_bottom = bottom - 80  # active panel bottom edge, 80 px above the taskbar
+    active_top = active_bottom - _PANEL_H
+    # Horizontal: centre the (possibly shrunk) panel on the work-area centre — this
+    # is identical to centring the active panel there, so no active-mode regression.
     x = left + ((right - left) - w) // 2
-    y = bottom - h - 80
+    # Vertical: centre the panel within the active band's height (parity with macOS).
+    y = active_top + (_PANEL_H - h) // 2
     return x, y, w, h
 
 
@@ -1225,8 +1269,9 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
 
         backbuffer["graphics"] = _gdip_create_from_hdc(hdc)  # 6  (C6)
 
-        _paint(backbuffer, state)  # first frame drawn into the DIB (IDLE at startup)
-        _blit(hwnd, backbuffer, _placement(w, h))  # 7  first blit, cleared buffer (C7)
+        _first_size = _mode_size(state["mode"])  # startup mode is LISTENING => full 160×48
+        _paint(backbuffer, state, _first_size)  # first frame drawn into the DIB
+        _blit(hwnd, backbuffer, _placement(*_first_size))  # 7  first blit, cleared buffer (C7)
 
         # D0: the initial timer arm sits pre-boundary, INSIDE build, so a failure
         # here is a plain build failure that run_hosted fails open (the frozen
@@ -1280,9 +1325,9 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
                 tick()  # immediate repaint at the new mode (analog of setNeedsDisplay_)
         except Exception:  # noqa: BLE001
             logger.debug("overlay set_mode redraw failed", exc_info=True)
-        # No panel-shrink on Windows this pass (accepted parity gap): the IDLE pill
-        # renders centered in the full 160x48 window. True 48x24 shrink (a sub-rect
-        # ULW blit, E4/E4b) is a self-contained follow-up; the §5 cadence IS applied.
+        # The panel-shrink rides this immediate tick: _tick reads _mode_size(mode),
+        # so a flip to IDLE draws + blits the 48×24 chip (and back to 160×48) in one
+        # marshalled turn — dimension-matched, no tear (parity spec Part 4, #79).
 
     def _teardown() -> None:
         # Deterministic, idempotent, fail-open teardown (ADR-0008 §4, parity
@@ -1308,8 +1353,13 @@ def build_overlay(level_source: Callable[[], float]) -> Overlay:
         # pump thread. Draw failures are swallowed so the pump survives.
         state["level"] = level_source()
         state["frame"] = state["frame"] + 1
-        _paint(backbuffer, state)
-        _blit(hwnd, backbuffer, _placement(w, h))
+        # Compute the mode footprint ONCE and feed the SAME tuple to _paint (which
+        # sub-rect to draw) and _blit (psize/pptDst) — draw-size and blit-size can
+        # never disagree, so the IDLE shrink/grow is dimension-matched and cannot
+        # tear (parity spec Part 4; a single UpdateLayeredWindow resizes+repaints).
+        size = _mode_size(state["mode"])
+        _paint(backbuffer, state, size)
+        _blit(hwnd, backbuffer, _placement(*size))
 
     backbuffer["tick"] = _tick  # kept reachable for the WM_TIMER path (Step 4)
     # WNDPROC (built at line ~349 with only `state`) reaches the redraw via
