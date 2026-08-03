@@ -469,6 +469,209 @@ def _run_appkit_menu_bar_loop(
     _run_appkit_host(controller, app, overlay, register_overlay, build_extra=_build_extra)
 
 
+def _build_settings_controller() -> Any:
+    """Build the non-modal AppKit settings window controller (#88).
+
+    Runs on the main thread inside :func:`_run_appkit_host`. AppKit is imported
+    here (never at module top) so this module stays importable on non-macOS / in
+    CI. The controller is an ``NSObject`` with ``open_`` (build-or-reopen the
+    window, reading the *current* config from disk each time) and ``save_``
+    (collect the controls, apply via :func:`apply_settings_edits`, persist via
+    :func:`save_config`, surfacing a :class:`ConfigError` in the window's status
+    line rather than crashing). v1 edits: cleanup on/off, copy-only (no-paste),
+    notify-on-ready, log-transcripts, and the transcription model; the push-to-talk
+    hotkey is shown read-only (its live-apply editor is #89). Non-modal +
+    reopen-safe: ``open_`` reloads config and brings the existing window forward.
+
+    Edits the **default** config file (:func:`default_config_path` via
+    ``load_config(None)`` / ``save_config(config, None)``) — the menu-bar app's
+    real target; a ``--config`` passed to ``seda gui`` does not redirect it.
+    """
+    import objc
+    from AppKit import (
+        NSApplication,
+        NSBackingStoreBuffered,
+        NSButton,
+        NSMakeRect,
+        NSObject,
+        NSSwitchButton,
+        NSTextField,
+        NSTitledWindowMask,
+        NSWindow,
+        NSWindowStyleMaskClosable,
+    )
+
+    from seda.config import (
+        apply_settings_edits,
+        load_config,
+        save_config,
+        select_push_to_talk,
+    )
+
+    # Each row: (dotted path, label, kind). "check" -> NSButton switch; "text" -> field.
+    _FIELDS = [
+        ("cleanup.enabled", "LLM cleanup", "check"),
+        ("app.notify_on_ready", "Notify on ready", "check"),
+        ("app.log_transcripts", "Log transcripts (privacy)", "check"),
+        ("transcription.model", "Model", "text"),
+    ]
+
+    class _SettingsController(NSObject):  # type: ignore[misc]
+        def init(self) -> Any:  # noqa: N802
+            self = objc.super(_SettingsController, self).init()
+            if self is None:
+                return None
+            self._window: Any = None
+            self._controls: dict[str, Any] = {}
+            self._status: Any = None
+            self._copy_only: Any = None
+            self._cfg: Any = None
+            return self
+
+        def open_(self, _sender: Any) -> None:  # noqa: N802 -- ObjC selector open:
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            self._cfg = load_config(None)
+            if self._window is None:
+                self._build_window()
+            self._populate()
+            self._window.makeKeyAndOrderFront_(None)
+
+        def _build_window(self) -> None:
+            style = NSTitledWindowMask | NSWindowStyleMaskClosable
+            win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                NSMakeRect(0, 0, 360, 240), style, NSBackingStoreBuffered, False
+            )
+            win.setTitle_("Seda Settings")
+            win.setReleasedWhenClosed_(False)  # reopen-safe: closing hides, not frees
+            content = win.contentView()
+            y = 200
+
+            def _label(text: str, yy: int) -> None:
+                lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(16, yy, 150, 20))
+                lbl.setStringValue_(text)
+                lbl.setEditable_(False)
+                lbl.setBordered_(False)
+                lbl.setDrawsBackground_(False)
+                content.addSubview_(lbl)
+
+            # Hotkey (read-only; #89 makes it editable).
+            _label("Push-to-talk", y)
+            hk = NSTextField.alloc().initWithFrame_(NSMakeRect(170, y, 170, 20))
+            hk.setEditable_(False)
+            hk.setSelectable_(True)
+            content.addSubview_(hk)
+            self._controls["_hotkey"] = hk
+            y -= 32
+
+            for dotted, label, kind in _FIELDS:
+                if kind == "check":
+                    btn = NSButton.alloc().initWithFrame_(NSMakeRect(16, y, 320, 20))
+                    btn.setButtonType_(NSSwitchButton)
+                    btn.setTitle_(label)
+                    content.addSubview_(btn)
+                    self._controls[dotted] = btn
+                    y -= 28
+                elif kind == "text":
+                    _label(label, y)
+                    fld = NSTextField.alloc().initWithFrame_(NSMakeRect(170, y, 170, 22))
+                    content.addSubview_(fld)
+                    self._controls[dotted] = fld
+                    y -= 32
+
+            # Copy-only maps to paste.multiline_policy == "copy_only".
+            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(16, y, 320, 20))
+            copy_btn.setButtonType_(NSSwitchButton)
+            copy_btn.setTitle_("Copy only (never paste)")
+            content.addSubview_(copy_btn)
+            self._copy_only = copy_btn
+            y -= 32
+
+            save = NSButton.alloc().initWithFrame_(NSMakeRect(250, 12, 90, 28))
+            save.setTitle_("Save")
+            save.setTarget_(self)
+            save.setAction_("save:")
+            content.addSubview_(save)
+
+            status = NSTextField.alloc().initWithFrame_(NSMakeRect(16, 14, 220, 20))
+            status.setEditable_(False)
+            status.setBordered_(False)
+            status.setDrawsBackground_(False)
+            content.addSubview_(status)
+            self._status = status
+            self._window = win
+
+        def _populate(self) -> None:
+            # Reads self._cfg (set by open_). Kept parameter-free so pyobjc can
+            # register it as a valid selector — a helper method with a non-selector
+            # arg signature raises BadPrototypeError on an ObjC subclass.
+            cfg = self._cfg
+            self._controls["_hotkey"].setStringValue_(select_push_to_talk(cfg.hotkeys))
+            self._controls["cleanup.enabled"].setState_(1 if cfg.cleanup.enabled else 0)
+            self._controls["app.notify_on_ready"].setState_(1 if cfg.app.notify_on_ready else 0)
+            self._controls["app.log_transcripts"].setState_(1 if cfg.app.log_transcripts else 0)
+            self._controls["transcription.model"].setStringValue_(cfg.transcription.model)
+            self._copy_only.setState_(1 if cfg.paste.multiline_policy == "copy_only" else 0)
+            self._status.setStringValue_("")
+
+        def save_(self, _sender: Any) -> None:  # noqa: N802 -- ObjC selector save:
+            from seda.config import ConfigError
+
+            # Reload the on-disk config and emit an edit ONLY for a field whose
+            # control value actually differs — so a save never rewrites a field the
+            # user did not touch. Critically this preserves paste.multiline_policy
+            # == "flatten": the copy-only checkbox only toggles copy_only<->preserve,
+            # and leaving it unchecked when the current value is "flatten" emits no
+            # multiline_policy edit at all (rather than clobbering it to "preserve").
+            try:
+                cfg = load_config(None)
+            except ConfigError as exc:
+                self._status.setStringValue_(str(exc).splitlines()[-1][:80])
+                return
+
+            edits: dict[str, Any] = {}
+            checks = {
+                "cleanup.enabled": cfg.cleanup.enabled,
+                "app.notify_on_ready": cfg.app.notify_on_ready,
+                "app.log_transcripts": cfg.app.log_transcripts,
+            }
+            for path, current_val in checks.items():
+                new_val = bool(self._controls[path].state())
+                if new_val != current_val:
+                    edits[path] = new_val
+
+            model = str(self._controls["transcription.model"].stringValue()).strip()
+            if not model:
+                self._status.setStringValue_("Model must not be empty.")
+                return
+            if model != cfg.transcription.model:
+                edits["transcription.model"] = model
+
+            # Copy-only maps ONLY the copy_only<->non-copy_only distinction; a
+            # non-copy_only current value (preserve OR flatten) is left untouched
+            # unless the box is now checked.
+            want_copy_only = bool(self._copy_only.state())
+            is_copy_only = cfg.paste.multiline_policy == "copy_only"
+            if want_copy_only != is_copy_only:
+                edits["paste.multiline_policy"] = "copy_only" if want_copy_only else "preserve"
+
+            if not edits:
+                self._status.setStringValue_("No changes.")
+                return
+
+            try:
+                save_config(apply_settings_edits(cfg, edits), None)
+            except ConfigError as exc:
+                self._status.setStringValue_(str(exc).splitlines()[-1][:80])
+                return
+            except Exception:  # noqa: BLE001
+                logger.warning("settings save failed", exc_info=True)
+                self._status.setStringValue_("save failed (see logs)")
+                return
+            self._status.setStringValue_("Saved. Restart to apply.")
+
+    return _SettingsController.alloc().init()
+
+
 def _build_status_item(
     app: Any,
     stop_requested: dict[str, bool],
@@ -540,7 +743,8 @@ def _build_status_item(
     # present UI on the main thread (dependency-free GCD-to-main path). Named
     # distinctly from build_overlay's runner: ObjC classes register GLOBALLY by
     # name, so two classes sharing a name in one process raise
-    # "overriding existing Objective-C class" — which broke the whole menu build.
+    # "overriding existing Objective-C class" (regression: this was _MainThreadRunner,
+    # colliding with build_overlay's; caught by the #90 on-hardware by-eye).
     class _StatusItemRunner(NSObject):  # type: ignore[misc]
         def runHolder_(self, holder: Any) -> None:  # noqa: N802
             holder["fn"]()
@@ -591,6 +795,13 @@ def _build_status_item(
     doctor_target = _DoctorTarget.alloc().init()
 
     menu = NSMenu.alloc().init()
+    settings_controller = _build_settings_controller()
+    settings_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Settings…", "open:", ","
+    )
+    settings_item.setTarget_(settings_controller)
+    menu.addItem_(settings_item)
+    menu.addItem_(NSMenuItem.separatorItem())
     logs_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Open Logs", "openLogs:", "")
     logs_item.setTarget_(open_logs_target)
     menu.addItem_(logs_item)
@@ -612,10 +823,10 @@ def _build_status_item(
         register_status(_apply)
 
     def _teardown() -> None:
-        # Keep the menu-action targets + the main-thread runner referenced until
-        # teardown so a menu action never dispatches into a freed ObjC object;
-        # drop the item from the bar.
-        _ = (quit_target, open_logs_target, doctor_target, runner)
+        # Keep the menu-action targets + settings controller + main-thread runner
+        # referenced until teardown so a menu action never dispatches into a freed
+        # ObjC object; drop the item from the bar.
+        _ = (quit_target, open_logs_target, doctor_target, settings_controller, runner)
         status_bar.removeStatusItem_(item)
 
     return _teardown

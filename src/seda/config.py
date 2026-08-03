@@ -567,6 +567,44 @@ def render_toml(config: Config) -> str:
     return _render_toml(config.model_dump(mode="python"))
 
 
+def apply_settings_edits(current: Config, edits: dict[str, Any]) -> Config:
+    """Return a new ``Config`` with *edits* applied to *current* and re-validated.
+
+    *edits* maps dotted field paths (e.g. ``"cleanup.enabled"``,
+    ``"transcription.model"``, ``"cleanup.ollama.base_url"``) to their new values
+    — the shape the settings window (#88) produces. Paths of any depth are walked
+    into nested tables. The values are merged into *current*'s dump and the result
+    is re-validated through the same path as :func:`load_config`, so an invalid
+    edit raises :class:`ConfigError` with the readable, in-window message (the
+    ``auto_submit=true`` rule, hotkey syntax, etc.). *current* is never mutated; an
+    empty *edits* returns an equal config.
+    """
+    data = current.model_dump(mode="python")
+    for dotted, value in edits.items():
+        parts = dotted.split(".")
+        if len(parts) < 2:
+            raise ConfigError(f"settings edit path must be 'section.field', got {dotted!r}")
+        node = data
+        for key in parts[:-1]:
+            child = node.setdefault(key, {})
+            if not isinstance(child, dict):
+                raise ConfigError(f"settings edit path {dotted!r} traverses a non-table")
+            node = child
+        node[parts[-1]] = value
+    return _validate(data, source="<settings>")
+
+
+def save_config(config: Config, path: Path | None = None) -> None:
+    """Write *config* to *path* (default :func:`default_config_path`) as TOML.
+
+    Creates the parent directory if needed. The written document is what
+    :func:`load_config` reads back (round-trips to an equal config).
+    """
+    target = path or default_config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_toml(config), encoding="utf-8")
+
+
 def _render_toml(data: dict[str, Any]) -> str:
     scalars: list[str] = []
     tables: list[str] = []

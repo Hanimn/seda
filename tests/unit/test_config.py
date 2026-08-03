@@ -16,10 +16,12 @@ import pytest
 from seda.config import (
     Config,
     ConfigError,
+    apply_settings_edits,
     default_config_path,
     load_config,
     load_config_from_dict,
     render_toml,
+    save_config,
 )
 
 
@@ -525,3 +527,59 @@ def test_migration_notice_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(config_module, "user_config_path", _boom)
     assert migration_notice() is None
+
+
+# --- Settings-window apply/save (#88) --------------------------------------
+
+
+def test_apply_settings_edits_updates_only_named_fields() -> None:
+    """apply_settings_edits merges dotted-path edits, leaving other fields intact (#88)."""
+    current = Config()
+    assert current.cleanup.enabled is False
+    updated = apply_settings_edits(
+        current, {"cleanup.enabled": True, "transcription.model": "base.en"}
+    )
+    assert updated.cleanup.enabled is True
+    assert updated.transcription.model == "base.en"
+    # Untouched fields keep their values; the original is not mutated.
+    assert updated.app.notify_on_ready == current.app.notify_on_ready
+    assert current.cleanup.enabled is False, "the input Config must not be mutated"
+
+
+def test_apply_settings_edits_rejects_invalid_with_readable_error() -> None:
+    """An invalid edit re-validates and raises ConfigError with a readable message (#88)."""
+    with pytest.raises(ConfigError) as exc:
+        apply_settings_edits(Config(), {"paste.auto_submit": True})
+    # The safety rule (§ never auto-submit) surfaces as a clear, in-window message.
+    assert "auto_submit" in str(exc.value)
+
+
+def test_apply_settings_edits_empty_is_a_noop_equal_config() -> None:
+    """No edits yields a config equal to the input (#88)."""
+    current = load_config_from_dict({"transcription": {"model": "small.en"}})
+    assert apply_settings_edits(current, {}) == current
+
+
+def test_save_config_writes_valid_reloadable_toml(tmp_path: Path) -> None:
+    """save_config writes TOML that load_config reads back to the same config (#88)."""
+    target = tmp_path / "config.toml"
+    cfg = apply_settings_edits(Config(), {"cleanup.enabled": True})
+    save_config(cfg, target)
+    assert target.exists()
+    reloaded = load_config(target)
+    assert reloaded.cleanup.enabled is True
+    assert reloaded == cfg
+
+
+def test_apply_settings_edits_preserves_untouched_multiline_flatten() -> None:
+    """Editing only cleanup must NOT clobber a 'flatten' multiline_policy (#88 review)."""
+    current = load_config_from_dict({"paste": {"multiline_policy": "flatten"}})
+    updated = apply_settings_edits(current, {"cleanup.enabled": True})
+    assert updated.paste.multiline_policy == "flatten", "flatten must survive an unrelated edit"
+    assert updated.cleanup.enabled is True
+
+
+def test_apply_settings_edits_walks_nested_paths() -> None:
+    """A 3-level path descends into nested tables, not a flat key (#88 review)."""
+    updated = apply_settings_edits(Config(), {"cleanup.ollama.model": "qwen2.5:7b"})
+    assert updated.cleanup.ollama.model == "qwen2.5:7b"
