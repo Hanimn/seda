@@ -28,16 +28,17 @@ pytestmark = [
 ]
 
 
-def test_status_item_builds_without_objc_class_collision() -> None:
-    """Build the overlay AND the status item in one process — no ObjC name clash.
+def test_status_item_and_settings_build_without_objc_class_collision() -> None:
+    """Build the overlay AND the status item (incl. the settings controller) in one
+    process — no ObjC class-name clash, and the classes register with valid selectors.
 
     ObjC classes register process-globally by name, so two host functions each
     defining a class of the same name raise ``objc.error: ... is overriding
     existing Objective-C class`` the moment both run; and a helper method on an
     ``NSObject`` subclass with a non-selector arg signature raises
     ``BadPrototypeError`` at class-definition time. ``seda gui`` runs exactly this
-    sequence (``build_overlay`` then ``_build_status_item``, which defines the
-    menu's action-target classes). This reproduces it and tears down cleanly.
+    sequence (``build_overlay`` then ``_build_status_item``, which itself builds
+    the settings controller for the menu). This reproduces it and tears down cleanly.
 
     NOTE: the host's builders register their ObjC classes process-globally and are
     only meant to run ONCE per process (one status item). So this single test
@@ -51,8 +52,9 @@ def test_status_item_builds_without_objc_class_collision() -> None:
     # 1) build_overlay registers its ObjC classes (WaveformView, its runner, ...).
     overlay = host.build_overlay(lambda: 0.0)
     try:
-        # 2) the gui path's classes (status runner, Quit/OpenLogs/Doctor targets)
-        #    — this is where a duplicate class name or a bad selector prototype crashes.
+        # 2) the gui path's classes (status runner, Quit/OpenLogs/Doctor targets,
+        #    AND the settings controller built for the menu) — this is where a
+        #    duplicate class name or a bad selector prototype crashes.
         app = NSApplication.sharedApplication()
         teardown_extra = host._build_status_item(app, {"flag": False}, None)
         try:
