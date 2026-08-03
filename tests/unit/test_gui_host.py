@@ -577,3 +577,97 @@ class TestTriggerFromEvent:
         from seda.gui.host import _trigger_from_event
 
         assert _trigger_from_event(_FakeEvent(126, "")) == "up"
+
+
+# --- _run_capture_apply: off-thread sink + marshalled UI (#89 crash fix) ------
+
+
+class TestRunCaptureApply:
+    """The captured-chord apply must run the sink OFF the caller thread and route
+    the UI update through dispatch_main — never inline on a main-thread callback
+    (the on-device SIGABRT). With no dispatch_main it runs inline (tests)."""
+
+    def test_sink_runs_off_thread_and_ui_marshalled_via_dispatch_main(self) -> None:
+        import threading
+
+        from seda.gui.host import _run_capture_apply
+
+        caller = threading.current_thread().ident
+        sink_thread: dict[str, object] = {}
+        dispatched: list[str] = []
+        ok = threading.Event()
+
+        def _sink(chord: str) -> str | None:
+            sink_thread["id"] = threading.current_thread().ident
+            sink_thread["chord"] = chord
+            return None
+
+        def _dispatch(fn: Callable[[], None]) -> None:
+            dispatched.append("marshalled")
+            fn()
+
+        def _on_ok() -> None:
+            ok.set()
+
+        def _on_err(_msg: str) -> None:  # pragma: no cover - success path
+            pass
+
+        _run_capture_apply("<ctrl>+d", _sink, _dispatch, _on_ok, _on_err)
+        assert ok.wait(timeout=5.0), "the success callback never ran"
+        assert sink_thread["chord"] == "<ctrl>+d"
+        assert sink_thread["id"] != caller, "the sink must run on a background thread"
+        assert dispatched == ["marshalled"], "UI update must be marshalled via dispatch_main"
+
+    def test_error_from_sink_routes_to_on_err(self) -> None:
+        import threading
+
+        from seda.gui.host import _run_capture_apply
+
+        errs: list[str] = []
+        done = threading.Event()
+
+        def _sink(_chord: str) -> str | None:
+            return "'<ctrl>+x' is not a usable shortcut."
+
+        def _dispatch(fn: Callable[[], None]) -> None:
+            fn()
+
+        def _on_err(msg: str) -> None:
+            errs.append(msg)
+            done.set()
+
+        _run_capture_apply("<ctrl>+x", _sink, _dispatch, lambda: None, _on_err)
+        assert done.wait(timeout=5.0)
+        assert errs == ["'<ctrl>+x' is not a usable shortcut."]
+
+    def test_sink_exception_becomes_error_message(self) -> None:
+        import threading
+
+        from seda.gui.host import _run_capture_apply
+
+        errs: list[str] = []
+        done = threading.Event()
+
+        def _sink(_chord: str) -> str | None:
+            raise RuntimeError("boom")
+
+        def _dispatch(fn: Callable[[], None]) -> None:
+            fn()
+
+        def _on_err(msg: str) -> None:
+            errs.append(msg)
+            done.set()
+
+        _run_capture_apply("<ctrl>+d", _sink, _dispatch, lambda: None, _on_err)
+        assert done.wait(timeout=5.0)
+        assert errs and "see logs" in errs[0], "a sink crash must surface as an error"
+
+    def test_no_dispatch_main_runs_inline(self) -> None:
+        from seda.gui.host import _run_capture_apply
+
+        ran: list[str] = []
+        _run_capture_apply(
+            "<ctrl>+d", lambda _c: None, None, lambda: ran.append("ok"), lambda _m: None
+        )
+        # Inline: completes synchronously before returning (no thread to await).
+        assert ran == ["ok"]

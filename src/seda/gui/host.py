@@ -469,7 +469,17 @@ def _run_appkit_menu_bar_loop(
     app = NSApplication.sharedApplication()
 
     def _build_extra(app_: Any, stop_requested: dict[str, bool]) -> Callable[[], None]:
-        return _build_status_item(app_, stop_requested, register_status, on_hotkey_captured)
+        # overlay.dispatch_main marshals the live-swap UI update back to the main
+        # thread; the swap itself runs on a background thread (see the capture
+        # path in _build_settings_controller) so it never re-inits the pynput
+        # listener nested inside a main-thread NSEvent callback (SIGABRT risk).
+        return _build_status_item(
+            app_,
+            stop_requested,
+            register_status,
+            on_hotkey_captured,
+            overlay.dispatch_main,
+        )
 
     _run_appkit_host(controller, app, overlay, register_overlay, build_extra=_build_extra)
 
@@ -533,8 +543,59 @@ def _trigger_from_event(event: Any) -> str | None:
     return text.lower()
 
 
+def _run_capture_apply(
+    chord: str,
+    on_captured: Callable[[str], str | None],
+    dispatch_main: Callable[[Callable[[], None]], None] | None,
+    on_ok: Callable[[], None],
+    on_err: Callable[[str], None],
+) -> None:
+    """Run a captured chord's apply-sink OFF the caller's thread and marshal the
+    UI result back via *dispatch_main* (#89).
+
+    ``on_captured`` persists the chord and does the LIVE pynput listener
+    re-registration. That re-init must NOT run nested inside a main-thread NSEvent
+    callback — doing so re-triggers the Carbon TIS / ``AXIsProcessTrusted``
+    first-init race :func:`_warm_input_source`/:func:`_warm_accessibility_trust`
+    guard against, aborting the process (SIGABRT) on device. So the sink runs on a
+    background daemon thread (the #90 Doctor pattern) and the UI mutation (*on_ok*
+    / *on_err*, which touch AppKit controls) is marshalled back to the main thread
+    via *dispatch_main*.
+
+    When *dispatch_main* is ``None`` (tests / no overlay wired) everything runs
+    inline — there is no main run loop to marshal onto, and no live listener to
+    race. Pure of AppKit: the UI mutations are injected callbacks, so this is
+    unit-testable on any platform.
+    """
+    import threading
+
+    def _apply() -> None:
+        try:
+            error = on_captured(chord)
+        except Exception:  # noqa: BLE001 -- the swap must never crash the app
+            logger.warning("hotkey apply failed", exc_info=True)
+            error = "could not apply shortcut (see logs)"
+
+        def _update() -> None:
+            if error:
+                on_err(error)
+            else:
+                on_ok()
+
+        if dispatch_main is not None:
+            dispatch_main(_update)
+        else:
+            _update()
+
+    if dispatch_main is not None:
+        threading.Thread(target=_apply, name="seda-hotkey-apply", daemon=True).start()
+    else:
+        _apply()
+
+
 def _build_settings_controller(
     on_hotkey_captured: Callable[[str], str | None] | None = None,
+    dispatch_main: Callable[[Callable[[], None]], None] | None = None,
 ) -> Any:
     """Build the non-modal AppKit settings window controller (#88, #89).
 
@@ -813,15 +874,19 @@ def _build_settings_controller(
 
             chord = serialize_chord(mods, trigger)
             self._disarm_capture()
-            # Hand off to the sink: persist + live-apply. It returns an error
-            # string to show, or None on success.
-            error = on_hotkey_captured(chord)
-            if error:
-                self._status.setStringValue_(error[:80])
-            else:
+            self._status.setStringValue_("Applying…")
+
+            def _on_ok() -> None:
                 self._hotkey_chord = chord
                 self._hotkey_label.setStringValue_(chord)
                 self._status.setStringValue_("Shortcut updated.")
+
+            def _on_err(msg: str) -> None:
+                self._status.setStringValue_(msg[:80])
+
+            # Run the sink (persist + LIVE listener re-registration) OFF this
+            # NSEvent-callback turn — see _run_capture_apply for why (SIGABRT).
+            _run_capture_apply(chord, on_hotkey_captured, dispatch_main, _on_ok, _on_err)
 
         @objc.python_method  # type: ignore[untyped-decorator]
         def _disarm_capture(self) -> None:
@@ -897,6 +962,7 @@ def _build_status_item(
     stop_requested: dict[str, bool],
     register_status: Callable[[Callable[[HudMode], None]], None] | None,
     on_hotkey_captured: Callable[[str], str | None] | None = None,
+    dispatch_main: Callable[[Callable[[], None]], None] | None = None,
 ) -> Callable[[], None]:
     """Create the ``NSStatusBar`` item + menu (Quit) and wire live status — issue #87.
 
@@ -1019,7 +1085,7 @@ def _build_status_item(
     doctor_target = _DoctorTarget.alloc().init()
 
     menu = NSMenu.alloc().init()
-    settings_controller = _build_settings_controller(on_hotkey_captured)
+    settings_controller = _build_settings_controller(on_hotkey_captured, dispatch_main)
     settings_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         "Settings…", "open:", ","
     )

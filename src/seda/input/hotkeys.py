@@ -25,11 +25,6 @@ from typing import Any, Protocol
 from seda.config import HotkeysConfig, select_push_to_talk
 from seda.errors import HotkeyError
 
-# Bound (seconds) for joining a listener thread in stop(). Long enough for an
-# in-flight callback to finish before a live re-registration swaps providers,
-# short enough that a wedged listener can never hang teardown/shutdown.
-_LISTENER_JOIN_TIMEOUT_S = 1.0
-
 
 class HotkeyProvider(Protocol):
     """Minimal interface for global hotkey listeners."""
@@ -432,29 +427,13 @@ class PynputHotkeyProvider:
             raise HotkeyError(f"could not register cancel hotkey: {exc}") from exc
 
     def stop(self) -> None:
-        """Stop both hotkey listeners.
-
-        pynput's ``Listener`` is a ``threading.Thread``; ``.stop()`` only signals
-        it and returns without joining, so an in-flight callback can still be
-        running on the listener thread after ``stop()`` returns. For a live
-        re-registration (:meth:`AppController.reconfigure_hotkeys`) that matters:
-        the swap must not install a new listener while the old thread is mid-
-        callback. So we ``join`` each thread with a short bound — long enough for
-        a dispatched callback to finish, short enough that a wedged listener can
-        never hang shutdown. A missed join (timeout) is swallowed: teardown must
-        never block indefinitely on the OS.
-        """
+        """Stop both hotkey listeners."""
         for attr in ("_listener", "_cancel_listener"):
             listener = getattr(self, attr)
             setattr(self, attr, None)
             if listener is not None:
                 with contextlib.suppress(Exception):
                     listener.stop()
-                # Best-effort join so no old-thread callback runs past stop().
-                join = getattr(listener, "join", None)
-                if callable(join):
-                    with contextlib.suppress(Exception):
-                        join(_LISTENER_JOIN_TIMEOUT_S)
 
     def _make_darwin_intercept(self) -> Callable[[Any, Any], Any]:
         """Build a macOS ``darwin_intercept`` that hides only the PTT chord.
