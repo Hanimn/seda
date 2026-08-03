@@ -11,7 +11,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from seda.config import HotkeysConfig
-from seda.input.hotkeys import HotkeyProvider, PynputHotkeyProvider
+from seda.input.hotkeys import (
+    HotkeyProvider,
+    PynputHotkeyProvider,
+    key_to_token,
+    serialize_chord,
+)
 
 
 def _make_pynput_mock() -> tuple[types.ModuleType, MagicMock, MagicMock]:
@@ -357,3 +362,101 @@ class TestPynputHotkeyProviderStop:
 
         fake_ptt_listener.stop.assert_called_once()
         fake_cancel_listener.stop.assert_called_once()
+
+
+# --- Seam 1 (#89): chord serializer — pynput key objects → config chord string ---
+
+
+class _FakeNamedKey:
+    """Stand-in for a pynput ``keyboard.Key`` (has ``.name``, no ``.char``)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeCharKey:
+    """Stand-in for a pynput ``keyboard.KeyCode`` (has ``.char``, ``.name`` is None)."""
+
+    def __init__(self, char: str) -> None:
+        self.char = char
+        self.name = None
+
+
+class TestSerializeChord:
+    """serialize_chord builds a canonical config chord from modifiers + trigger."""
+
+    def test_canonical_modifier_order_regardless_of_input_order(self) -> None:
+        # A set has no order; the output must be deterministic (ctrl, alt, shift, cmd).
+        assert serialize_chord(frozenset({"shift", "ctrl"}), "space") == "<ctrl>+<shift>+space"
+        assert serialize_chord(frozenset({"ctrl", "shift"}), "space") == "<ctrl>+<shift>+space"
+        assert (
+            serialize_chord(frozenset({"cmd", "alt", "ctrl", "shift"}), "m")
+            == "<ctrl>+<alt>+<shift>+<cmd>+m"
+        )
+
+    def test_modifiers_are_bracketed_trigger_is_bare(self) -> None:
+        # Named triggers (space, f5) stay bare — config format is <mod>+<mod>+trigger.
+        assert serialize_chord(frozenset({"ctrl"}), "space") == "<ctrl>+space"
+        assert serialize_chord(frozenset({"cmd"}), "f5") == "<cmd>+f5"
+
+    def test_single_char_trigger_stays_bare(self) -> None:
+        assert serialize_chord(frozenset({"cmd"}), "d") == "<cmd>+d"
+
+    def test_no_modifiers_is_just_the_trigger(self) -> None:
+        assert serialize_chord(frozenset(), "f5") == "f5"
+
+
+class TestKeyToToken:
+    """key_to_token maps a live pynput key to its bare config token."""
+
+    def test_left_right_modifier_aliases_collapse_to_canonical(self) -> None:
+        assert key_to_token(_FakeNamedKey("ctrl_l")) == "ctrl"
+        assert key_to_token(_FakeNamedKey("ctrl_r")) == "ctrl"
+        assert key_to_token(_FakeNamedKey("shift_r")) == "shift"
+        assert key_to_token(_FakeNamedKey("alt_gr")) == "alt"
+        assert key_to_token(_FakeNamedKey("cmd_l")) == "cmd"
+
+    def test_plain_modifier_names_pass_through(self) -> None:
+        assert key_to_token(_FakeNamedKey("ctrl")) == "ctrl"
+        assert key_to_token(_FakeNamedKey("shift")) == "shift"
+
+    def test_named_non_modifier_key_uses_its_name(self) -> None:
+        assert key_to_token(_FakeNamedKey("space")) == "space"
+        assert key_to_token(_FakeNamedKey("f5")) == "f5"
+
+    def test_char_key_uses_its_char(self) -> None:
+        assert key_to_token(_FakeCharKey("d")) == "d"
+
+    def test_unencodable_key_returns_none(self) -> None:
+        # A KeyCode with no char (e.g. a dead key) is not encodable.
+        assert key_to_token(_FakeCharKey(char=None)) is None  # type: ignore[arg-type]
+
+        class _Blank:
+            name = None
+
+        assert key_to_token(_Blank()) is None
+
+
+class TestSerializeChordRoundTrip:
+    """The whole point of the seam: serialize_chord output must parse under the
+    SAME path the provider uses (_normalize_hotkey → keyboard.HotKey.parse), so a
+    captured chord is always a chord the live listener can register."""
+
+    @pytest.mark.parametrize(
+        ("modifiers", "trigger"),
+        [
+            (frozenset({"ctrl", "shift"}), "space"),
+            (frozenset({"cmd"}), "d"),
+            (frozenset({"ctrl", "alt"}), "m"),
+            (frozenset({"cmd", "shift"}), "f5"),
+            (frozenset(), "f5"),
+        ],
+    )
+    def test_output_parses_via_provider_path(self, modifiers: frozenset[str], trigger: str) -> None:
+        keyboard = pytest.importorskip("pynput.keyboard")
+        from seda.input.hotkeys import _normalize_hotkey
+
+        chord = serialize_chord(modifiers, trigger)
+        # Must not raise — this is exactly PynputHotkeyProvider.start()'s parse path.
+        parsed = keyboard.HotKey.parse(_normalize_hotkey(chord))
+        assert len(parsed) == len(modifiers) + 1

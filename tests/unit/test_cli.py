@@ -763,7 +763,7 @@ def test_gui_hosts_on_macos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     result = runner.invoke(app, ["gui", "--config", str(_gui_config(tmp_path))])
     assert result.exit_code == 0
     assert "controller" in seen
-    assert seen["kwargs"] == {"register_overlay", "register_status"}
+    assert seen["kwargs"] == {"register_overlay", "register_status", "on_hotkey_captured"}
 
 
 def test_gui_errors_when_host_declines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -808,3 +808,54 @@ def test_build_controller_shared_wiring(tmp_path: Path) -> None:
         "the fan-out always carries a ConsoleNotifier"
     )
     assert controller is not None and cfg is not None
+
+
+def test_gui_on_hotkey_captured_persists_and_live_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The on_hotkey_captured sink (#89) live-applies via reconfigure_hotkeys AND
+    persists the new push_to_talk to config, on capture."""
+    import seda.app as app_module
+    import seda.gui.host as host_module
+    from seda.config import load_config
+
+    _force_macos_host(monkeypatch)
+
+    reconfigured: list[str] = []
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def reconfigure_hotkeys(self, new_config: object) -> None:
+            reconfigured.append(new_config.hotkeys.push_to_talk)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+
+    # Point the default-config path at a temp file the sink will read+write.
+    cfg_path = tmp_path / "seda.toml"
+    cfg_path.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+    monkeypatch.setattr("seda.config.default_config_path", lambda: cfg_path)
+
+    captured: dict[str, object] = {}
+
+    def _fake_host(controller: object, **kwargs: object) -> bool:
+        captured["on_hotkey_captured"] = kwargs["on_hotkey_captured"]
+        return True
+
+    monkeypatch.setattr(host_module, "run_with_menu_bar", _fake_host)
+
+    result = runner.invoke(app, ["gui", "--config", str(_gui_config(tmp_path))])
+    assert result.exit_code == 0
+
+    on_capture = captured["on_hotkey_captured"]
+    assert callable(on_capture)
+
+    # Fire the sink with a new chord: it must live-apply AND persist, returning
+    # None (success).
+    err = on_capture("<ctrl>+<alt>+m")
+    assert err is None
+    assert reconfigured == ["<ctrl>+<alt>+m"], "must live-apply via reconfigure_hotkeys"
+    # And the new chord is written to the default config file.
+    persisted = load_config(cfg_path)
+    assert persisted.hotkeys.push_to_talk == "<ctrl>+<alt>+m"

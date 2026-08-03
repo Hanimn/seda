@@ -401,6 +401,47 @@ def gui(
     def _register_status(apply: Callable[[HudMode], None]) -> None:
         status["apply"] = apply
 
+    def _on_hotkey_captured(chord: str) -> str | None:
+        """Persist a newly captured push-to-talk chord and live-apply it (#89).
+
+        Returns ``None`` on success or a short error string for the settings
+        window's status line. Live-applies FIRST (via
+        ``controller.reconfigure_hotkeys``, the true validator — an invalid chord
+        raises ``HotkeyError`` only at listener-start) and persists to TOML ONLY
+        after the live swap succeeds, so a bad chord is never written to disk.
+        Edits the default config file (``load_config(None)``), matching the
+        settings window's target.
+        """
+        from seda.config import (
+            ConfigError,
+            apply_settings_edits,
+            load_config,
+            save_config,
+        )
+        from seda.errors import HotkeyError
+
+        try:
+            current = load_config(None)
+            new_cfg = apply_settings_edits(current, {"hotkeys.push_to_talk": chord})
+        except ConfigError as exc:
+            return str(exc).splitlines()[-1][:80]
+
+        try:
+            controller.reconfigure_hotkeys(new_cfg)
+        except HotkeyError:
+            return f"'{chord}' is not a usable shortcut."
+        except Exception:  # noqa: BLE001 -- never crash the GUI on a live swap
+            get_logger().warning("live hotkey re-registration failed", exc_info=True)
+            return "could not apply shortcut (see logs)"
+
+        # Persist only after the live swap succeeded.
+        try:
+            save_config(new_cfg, None)
+        except Exception:  # noqa: BLE001 -- applied live; a persist miss is non-fatal
+            get_logger().warning("hotkey applied but not persisted", exc_info=True)
+            return "applied, but could not save (see logs)"
+        return None
+
     def _register_overlay(overlay: Overlay) -> None:
         # Compose ONE set_mode that fans the same HudMode to the HUD and the status
         # item. The event->HudMode mapping stays single-sourced in OverlayNotifier;
@@ -422,6 +463,7 @@ def gui(
         controller,
         register_overlay=_register_overlay,
         register_status=_register_status,
+        on_hotkey_captured=_on_hotkey_captured,
     )
     if not hosted:
         # macOS but AppKit genuinely failed to build (fail-open inside run_hosted).

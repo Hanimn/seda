@@ -415,6 +415,7 @@ def run_with_menu_bar(
     build: Callable[[Callable[[], float]], Overlay] | None = None,
     register_overlay: Callable[[Overlay], None] | None = None,
     register_status: Callable[[Callable[[HudMode], None]], None] | None = None,
+    on_hotkey_captured: Callable[[str], str | None] | None = None,
     platform: str | None = None,
 ) -> bool:
     """Run *controller* under the macOS menu-bar app (status item + Quit) — issue #87.
@@ -427,17 +428,19 @@ def run_with_menu_bar(
     ``register_status`` is called on the main thread, once the item exists, with
     an ``apply: Callable[[HudMode], None]`` sink bound to the live status item —
     ``cli.gui`` wires it into the composed ``set_mode`` fan-out so the item tracks
-    the same ``HudMode`` the HUD does. Returns ``True`` if the host took over and
-    ran to shutdown; ``False`` (fail-open) only when unsupported (non-macOS) or an
-    AppKit build failure — ``cli.gui`` treats ``False`` as a hard error (unlike
-    ``run``, the menu-bar app has nothing to degrade into).
+    the same ``HudMode`` the HUD does. ``on_hotkey_captured`` is handed to the
+    settings window's Record button (#89): it persists + live-applies a captured
+    chord, returning an error string or ``None``. Returns ``True`` if the host
+    took over and ran to shutdown; ``False`` (fail-open) only when unsupported
+    (non-macOS) or an AppKit build failure — ``cli.gui`` treats ``False`` as a
+    hard error (unlike ``run``, the menu-bar app has nothing to degrade into).
     """
     from seda.gui._hostloop import run_hosted
 
     build_fn = build if build is not None else build_overlay
 
     def _loop(c: AppController, o: Overlay, reg: Callable[[Overlay], None] | None) -> None:
-        _run_appkit_menu_bar_loop(c, o, reg, register_status)
+        _run_appkit_menu_bar_loop(c, o, reg, register_status, on_hotkey_captured)
 
     return run_hosted(
         controller,
@@ -454,6 +457,7 @@ def _run_appkit_menu_bar_loop(
     overlay: Overlay,
     register_overlay: Callable[[Overlay], None] | None,
     register_status: Callable[[Callable[[HudMode], None]], None] | None,
+    on_hotkey_captured: Callable[[str], str | None] | None = None,
 ) -> None:
     """macOS ``run_loop`` body for :func:`run_with_menu_bar` (past the fail-open boundary).
 
@@ -465,13 +469,74 @@ def _run_appkit_menu_bar_loop(
     app = NSApplication.sharedApplication()
 
     def _build_extra(app_: Any, stop_requested: dict[str, bool]) -> Callable[[], None]:
-        return _build_status_item(app_, stop_requested, register_status)
+        return _build_status_item(app_, stop_requested, register_status, on_hotkey_captured)
 
     _run_appkit_host(controller, app, overlay, register_overlay, build_extra=_build_extra)
 
 
-def _build_settings_controller() -> Any:
-    """Build the non-modal AppKit settings window controller (#88).
+# macOS virtual key codes for keys whose typed character is a private-use-area
+# glyph (function keys) or ambiguous (space/tab/return/arrows). Mapping them to
+# their config token lets the capture widget (#89) serialize e.g. F5 as ``<f5>``
+# rather than the U+F708 gibberish AppKit reports for charactersIgnoringModifiers.
+_KEYCODE_TO_TOKEN: dict[int, str] = {
+    49: "space",
+    48: "tab",
+    36: "enter",
+    53: "esc",
+    122: "f1",
+    120: "f2",
+    99: "f3",
+    118: "f4",
+    96: "f5",
+    97: "f6",
+    98: "f7",
+    100: "f8",
+    101: "f9",
+    109: "f10",
+    103: "f11",
+    111: "f12",
+    123: "left",
+    124: "right",
+    125: "down",
+    126: "up",
+}
+
+
+def _trigger_from_event(event: Any) -> str | None:
+    """Derive the bare trigger token from a captured key-down NSEvent (#89).
+
+    Returns:
+      - a token string (``space`` / ``f5`` / ``d``) for an encodable trigger,
+      - ``""`` for a modifier-only key-down (no trigger yet — keep waiting),
+      - ``None`` for a key we cannot encode (e.g. an unmapped media key whose
+        typed character is a private-use-area glyph), so the caller can reject it
+        cleanly instead of serializing an unregisterable chord.
+
+    Prefers the keyCode map (authoritative for function/named keys), then falls
+    back to the typed character for ordinary keys. A private-use-area character
+    (U+E000–U+F8FF, AppKit's NSFunctionKey range) with no keyCode match is
+    treated as unencodable.
+    """
+    keycode = int(event.keyCode())
+    named = _KEYCODE_TO_TOKEN.get(keycode)
+    if named is not None:
+        return named
+    chars = event.charactersIgnoringModifiers()
+    if not chars:
+        return ""  # modifier-only key-down
+    text = str(chars)
+    if not text.strip():
+        return ""
+    # A single private-use-area char is an unmapped function/media key.
+    if len(text) == 1 and 0xE000 <= ord(text) <= 0xF8FF:
+        return None
+    return text.lower()
+
+
+def _build_settings_controller(
+    on_hotkey_captured: Callable[[str], str | None] | None = None,
+) -> Any:
+    """Build the non-modal AppKit settings window controller (#88, #89).
 
     Runs on the main thread inside :func:`_run_appkit_host`. AppKit is imported
     here (never at module top) so this module stays importable on non-macOS / in
@@ -480,9 +545,16 @@ def _build_settings_controller() -> Any:
     (collect the controls, apply via :func:`apply_settings_edits`, persist via
     :func:`save_config`, surfacing a :class:`ConfigError` in the window's status
     line rather than crashing). v1 edits: cleanup on/off, copy-only (no-paste),
-    notify-on-ready, log-transcripts, and the transcription model; the push-to-talk
-    hotkey is shown read-only (its live-apply editor is #89). Non-modal +
-    reopen-safe: ``open_`` reloads config and brings the existing window forward.
+    notify-on-ready, log-transcripts, and the transcription model.
+
+    The push-to-talk hotkey is **editable** via a Record button (#89): pressing
+    it arms a window-local ``NSEvent`` key-down monitor; the next non-modifier
+    chord is serialized (:func:`serialize_chord`) and handed to
+    *on_hotkey_captured*, which persists it and live-applies it to the running
+    controller, returning an error string (shown in the status line) or ``None``
+    on success. ``on_hotkey_captured`` is ``None`` in tests / when no controller
+    is wired, in which case the Record button is inert. Non-modal + reopen-safe:
+    ``open_`` reloads config and brings the existing window forward.
 
     Edits the **default** config file (:func:`default_config_path` via
     ``load_config(None)`` / ``save_config(config, None)``) — the menu-bar app's
@@ -493,6 +565,12 @@ def _build_settings_controller() -> Any:
         NSApplication,
         NSBackingStoreBuffered,
         NSButton,
+        NSEvent,
+        NSEventMaskKeyDown,
+        NSEventModifierFlagCommand,
+        NSEventModifierFlagControl,
+        NSEventModifierFlagOption,
+        NSEventModifierFlagShift,
         NSMakeRect,
         NSObject,
         NSSwitchButton,
@@ -508,6 +586,20 @@ def _build_settings_controller() -> Any:
         save_config,
         select_push_to_talk,
     )
+    from seda.input.hotkeys import serialize_chord
+
+    # NSEvent.modifierFlags is a bitmask; map each flag to the canonical config
+    # modifier token serialize_chord expects. Order here is irrelevant —
+    # serialize_chord re-sorts into its canonical order.
+    _MODIFIER_FLAGS = (
+        (NSEventModifierFlagControl, "ctrl"),
+        (NSEventModifierFlagOption, "alt"),
+        (NSEventModifierFlagShift, "shift"),
+        (NSEventModifierFlagCommand, "cmd"),
+    )
+
+    def _modifiers_from_flags(flags: int) -> frozenset[str]:
+        return frozenset(tok for flag, tok in _MODIFIER_FLAGS if flags & flag)
 
     # Each row: (dotted path, label, kind). "check" -> NSButton switch; "text" -> field.
     _FIELDS = [
@@ -527,6 +619,13 @@ def _build_settings_controller() -> Any:
             self._status: Any = None
             self._copy_only: Any = None
             self._cfg: Any = None
+            # Hotkey capture (#89): the current-chord label, the Record button,
+            # the armed NSEvent monitor (None when not recording), and the last
+            # captured chord shown in the label.
+            self._hotkey_label: Any = None
+            self._record_button: Any = None
+            self._capture_monitor: Any = None
+            self._hotkey_chord: str = ""
             return self
 
         def open_(self, _sender: Any) -> None:  # noqa: N802 -- ObjC selector open:
@@ -555,13 +654,30 @@ def _build_settings_controller() -> Any:
                 lbl.setDrawsBackground_(False)
                 content.addSubview_(lbl)
 
-            # Hotkey (read-only; #89 makes it editable).
+            # Push-to-talk: a current-chord label + a Record button that captures
+            # a new chord (#89). The label shows the live chord; Record arms a
+            # window-local key monitor (see _record_hotkey_ / _capture_event).
             _label("Push-to-talk", y)
-            hk = NSTextField.alloc().initWithFrame_(NSMakeRect(170, y, 170, 20))
+            hk = NSTextField.alloc().initWithFrame_(NSMakeRect(170, y, 110, 20))
             hk.setEditable_(False)
+            hk.setBordered_(False)
+            hk.setDrawsBackground_(False)
             hk.setSelectable_(True)
             content.addSubview_(hk)
+            self._hotkey_label = hk
+            # Keep the read-only field reachable under its old key so _populate's
+            # existing shape is preserved (and any regression test that looks it up).
             self._controls["_hotkey"] = hk
+
+            record = NSButton.alloc().initWithFrame_(NSMakeRect(284, y - 4, 60, 26))
+            record.setTitle_("Record")
+            record.setBezelStyle_(1)  # NSBezelStyleRounded
+            record.setTarget_(self)
+            record.setAction_("recordHotkey:")
+            # Inert when no capture sink is wired (tests / no controller).
+            record.setEnabled_(on_hotkey_captured is not None)
+            content.addSubview_(record)
+            self._record_button = record
             y -= 32
 
             for dotted, label, kind in _FIELDS:
@@ -607,20 +723,115 @@ def _build_settings_controller() -> Any:
             # window; harmless if it ever raises, so it stays best-effort.
             with contextlib.suppress(Exception):
                 win.center()
+            # Be our own window delegate so windowWillClose_ can disarm a live
+            # capture monitor if the user closes the window mid-recording (#89).
+            with contextlib.suppress(Exception):
+                win.setDelegate_(self)
             self._window = win
+
+        def windowWillClose_(self, _notification: Any) -> None:  # noqa: N802 -- NSWindowDelegate
+            # If the window is closed while a chord capture is armed, the local
+            # NSEvent monitor is app-scoped and would otherwise keep swallowing
+            # keystrokes. Disarm it on close (idempotent — no-op when not armed).
+            self._disarm_capture()
 
         def _populate(self) -> None:
             # Reads self._cfg (set by open_). Kept parameter-free so pyobjc can
             # register it as a valid selector — a helper method with a non-selector
             # arg signature raises BadPrototypeError on an ObjC subclass.
             cfg = self._cfg
-            self._controls["_hotkey"].setStringValue_(select_push_to_talk(cfg.hotkeys))
+            self._hotkey_chord = select_push_to_talk(cfg.hotkeys)
+            self._controls["_hotkey"].setStringValue_(self._hotkey_chord)
             self._controls["cleanup.enabled"].setState_(1 if cfg.cleanup.enabled else 0)
             self._controls["app.notify_on_ready"].setState_(1 if cfg.app.notify_on_ready else 0)
             self._controls["app.log_transcripts"].setState_(1 if cfg.app.log_transcripts else 0)
             self._controls["transcription.model"].setStringValue_(cfg.transcription.model)
             self._copy_only.setState_(1 if cfg.paste.multiline_policy == "copy_only" else 0)
             self._status.setStringValue_("")
+
+        def recordHotkey_(self, _sender: Any) -> None:  # noqa: N802 -- selector recordHotkey:
+            """Arm a window-local key-down monitor to capture the next chord (#89).
+
+            Installs a LOCAL NSEvent monitor (window-scoped, not a global tap — no
+            new Accessibility surface). The first non-modifier key-down while armed
+            is serialized and handed to *on_hotkey_captured*; a bare Esc cancels.
+            Fully fail-open: any AppKit error here is logged, never crashes the
+            window, and disarms cleanly. Idempotent — re-arming while armed is a
+            no-op (the monitor is already live).
+            """
+            if on_hotkey_captured is None or self._capture_monitor is not None:
+                return
+            self._status.setStringValue_("Press keys… (Esc to cancel)")
+            self._record_button.setTitle_("Recording…")
+
+            def _handler(event: Any) -> Any:
+                # Runs on the main thread for local key events. Returning None
+                # swallows the event (so the chord never leaks to a field);
+                # returning the event passes it through. We only ever handle
+                # key-downs while armed.
+                try:
+                    self._capture_event(event)
+                except Exception:  # noqa: BLE001 -- capture must never crash the window
+                    logger.warning("hotkey capture failed", exc_info=True)
+                    self._disarm_capture()
+                    self._status.setStringValue_("capture failed (see logs)")
+                return None  # swallow — don't let the chord reach other controls
+
+            with contextlib.suppress(Exception):
+                self._capture_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                    NSEventMaskKeyDown, _handler
+                )
+            if self._capture_monitor is None:
+                # Monitor could not be installed — restore the idle button state.
+                self._disarm_capture()
+                self._status.setStringValue_("could not start capture")
+
+        @objc.python_method  # type: ignore[untyped-decorator]
+        def _capture_event(self, event: Any) -> None:
+            if on_hotkey_captured is None:
+                # Defensive: capture is only armed when a sink is wired, but a
+                # narrowed local keeps the type-checker honest and no-ops safely.
+                self._disarm_capture()
+                return
+            # Esc (keyCode 53) with no modifiers cancels the capture entirely.
+            if int(event.keyCode()) == 53 and not _modifiers_from_flags(int(event.modifierFlags())):
+                self._disarm_capture()
+                self._status.setStringValue_("capture cancelled")
+                return
+
+            mods = _modifiers_from_flags(int(event.modifierFlags()))
+            trigger = _trigger_from_event(event)
+            if trigger is None:
+                # A key we can't encode (an unmapped function/media key reports a
+                # private-use-area char). Reject clearly rather than serialize a
+                # gibberish chord that would fail later at listener-start.
+                self._disarm_capture()
+                self._status.setStringValue_("Unsupported key — try another.")
+                return
+            if not trigger:
+                return  # modifier-only key-down; keep waiting for the trigger
+
+            chord = serialize_chord(mods, trigger)
+            self._disarm_capture()
+            # Hand off to the sink: persist + live-apply. It returns an error
+            # string to show, or None on success.
+            error = on_hotkey_captured(chord)
+            if error:
+                self._status.setStringValue_(error[:80])
+            else:
+                self._hotkey_chord = chord
+                self._hotkey_label.setStringValue_(chord)
+                self._status.setStringValue_("Shortcut updated.")
+
+        @objc.python_method  # type: ignore[untyped-decorator]
+        def _disarm_capture(self) -> None:
+            monitor = self._capture_monitor
+            self._capture_monitor = None
+            if monitor is not None:
+                with contextlib.suppress(Exception):
+                    NSEvent.removeMonitor_(monitor)
+            with contextlib.suppress(Exception):
+                self._record_button.setTitle_("Record")
 
         def save_(self, _sender: Any) -> None:  # noqa: N802 -- ObjC selector save:
             from seda.config import ConfigError
@@ -685,6 +896,7 @@ def _build_status_item(
     app: Any,
     stop_requested: dict[str, bool],
     register_status: Callable[[Callable[[HudMode], None]], None] | None,
+    on_hotkey_captured: Callable[[str], str | None] | None = None,
 ) -> Callable[[], None]:
     """Create the ``NSStatusBar`` item + menu (Quit) and wire live status — issue #87.
 
@@ -696,6 +908,9 @@ def _build_status_item(
     flipping ``stop_requested["flag"]`` + posting a wakeup, so the pump does
     ``controller.shutdown() -> app.stop_``. Returns a teardown thunk that removes
     the item.
+
+    *on_hotkey_captured* is threaded to the settings window's Record button (#89);
+    ``None`` leaves the button inert.
     """
     from AppKit import (
         NSAlert,
@@ -804,7 +1019,7 @@ def _build_status_item(
     doctor_target = _DoctorTarget.alloc().init()
 
     menu = NSMenu.alloc().init()
-    settings_controller = _build_settings_controller()
+    settings_controller = _build_settings_controller(on_hotkey_captured)
     settings_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         "Settings…", "open:", ","
     )

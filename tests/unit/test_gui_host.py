@@ -525,3 +525,55 @@ def test_pump_ignores_when_no_stop_requested(monkeypatch: pytest.MonkeyPatch) ->
         platform="darwin",
     )
     assert events == [], "pump must not shut down or stop when no signal is pending"
+
+
+# --- _trigger_from_event: pure keycode/char → trigger mapping (#89) -----------
+
+
+class _FakeEvent:
+    """Minimal stand-in for an NSEvent key-down (keyCode + charactersIgnoringModifiers)."""
+
+    def __init__(self, keycode: int, chars: str) -> None:
+        self._keycode = keycode
+        self._chars = chars
+
+    def keyCode(self) -> int:  # noqa: N802 -- mirrors the ObjC selector
+        return self._keycode
+
+    def charactersIgnoringModifiers(self) -> str:  # noqa: N802 -- mirrors the ObjC selector
+        return self._chars
+
+
+class TestTriggerFromEvent:
+    def test_function_key_by_keycode(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        # F5 = keyCode 96; AppKit reports a PUA char, but the keycode map wins.
+        assert _trigger_from_event(_FakeEvent(96, "")) == "f5"
+
+    def test_space_by_keycode(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        assert _trigger_from_event(_FakeEvent(49, " ")) == "space"
+
+    def test_ordinary_char_lowercased(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        assert _trigger_from_event(_FakeEvent(2, "D")) == "d"
+
+    def test_modifier_only_keydown_returns_empty(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        # No non-modifier character yet — keep waiting for the trigger.
+        assert _trigger_from_event(_FakeEvent(59, "")) == ""
+
+    def test_unmapped_private_use_char_is_unencodable(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        # A PUA char with no keycode-map entry (some media key) → None (reject).
+        assert _trigger_from_event(_FakeEvent(999, "")) is None
+
+    def test_arrow_key_by_keycode(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        assert _trigger_from_event(_FakeEvent(126, "")) == "up"

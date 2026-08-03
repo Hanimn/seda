@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from seda.audio.recorder import RecorderConfig, SounddeviceRecorder
 from seda.cleanup.base import CleanupCounters
-from seda.config import Config
+from seda.config import Config, HotkeysConfig
 from seda.errors import (
     CleanupError,
     InvalidTransitionError,
@@ -122,6 +122,12 @@ class AppController:
         else:
             self._hotkeys = hotkey_provider
 
+        # Guards the hotkey provider's lifecycle so a live re-registration
+        # (reconfigure_hotkeys, #89) can't race the start()/shutdown() calls or
+        # an in-flight listener callback. Nothing else touches the provider
+        # under contention, so a single lock is sufficient.
+        self._hotkeys_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -157,11 +163,12 @@ class AppController:
             logger.info("shutdown raced with startup; aborting start()")
             return
 
-        self._hotkeys.start(
-            on_press=self._on_press,
-            on_release=self._on_release,
-            on_cancel=self._on_cancel,
-        )
+        with self._hotkeys_lock:
+            self._hotkeys.start(
+                on_press=self._on_press,
+                on_release=self._on_release,
+                on_cancel=self._on_cancel,
+            )
         self._notifier.notify(NotificationEvent.READY)
 
     def run(self) -> None:
@@ -196,8 +203,9 @@ class AppController:
         with contextlib.suppress(InvalidTransitionError):
             self._state_machine.transition(AppState.STOPPING)
 
-        # 1. Stop hotkeys.
-        self._hotkeys.stop()
+        # 1. Stop hotkeys (under the lock so a live reconfigure can't race).
+        with self._hotkeys_lock:
+            self._hotkeys.stop()
 
         # 2. If recording, cancel.
         with contextlib.suppress(Exception):
@@ -212,6 +220,75 @@ class AppController:
 
         # 6. Signal the main thread to exit.
         self._shutdown_event.set()
+
+    def _new_hotkey_provider(self, hotkeys_config: HotkeysConfig) -> HotkeyProvider:
+        """Build a fresh provider for a new hotkey config.
+
+        Isolated so :meth:`reconfigure_hotkeys` can be unit-tested without a real
+        pynput-backed provider (tests override this to yield a fake). The chord
+        is frozen at ``PynputHotkeyProvider.__init__`` (resolved via
+        ``select_push_to_talk``), so changing the chord at runtime means building
+        a new instance — not re-``start()``-ing the old one, which would just
+        re-register the same chord.
+        """
+        from seda.input.hotkeys import PynputHotkeyProvider
+
+        return PynputHotkeyProvider(hotkeys_config)
+
+    def reconfigure_hotkeys(self, new_config: Config) -> None:
+        """Re-register the global hotkey listener with a new chord, live (#89).
+
+        Stops the running provider and starts a fresh one built from
+        *new_config*, reusing the same bound callbacks so the dictation cycle is
+        unaffected. Proven race-safe against the macOS ``AXIsProcessTrusted``
+        first-init path by the #86 prototype: the warm path stays cached across a
+        second listener start, so no re-warm is needed here.
+
+        Only swaps at the ``IDLE`` resting point — never mid-recording or during
+        shutdown, where a swap could drop an in-flight cycle or race teardown. If
+        the state isn't ``IDLE`` the call is a no-op (the GUI keeps the old chord
+        and the user can retry once dictation settles).
+
+        **Rollback on failure.** An invalid chord surfaces as ``HotkeyError`` only
+        when the fresh provider's ``start()`` runs — but by then the old provider
+        has already been stopped. Rather than leave the app hotkey-less, the old
+        provider is *restarted* (re-registering its still-valid chord) before the
+        error propagates. So a failed swap is a true no-op: the running listener
+        and ``self._config`` are both unchanged, and the caller learns it failed.
+        On success ``self._hotkeys`` and ``self._config`` are rebound.
+        """
+        with self._hotkeys_lock:
+            if self._state_machine.state is not AppState.IDLE:
+                logger.info(
+                    "reconfigure_hotkeys skipped: state is %s, not IDLE",
+                    self._state_machine.state,
+                )
+                return
+
+            old_provider = self._hotkeys
+            new_provider = self._new_hotkey_provider(new_config.hotkeys)
+            old_provider.stop()
+            try:
+                new_provider.start(
+                    on_press=self._on_press,
+                    on_release=self._on_release,
+                    on_cancel=self._on_cancel,
+                )
+            except Exception:
+                # The new chord could not register. Restart the OLD provider so
+                # the app is never left without a working hotkey, then re-raise so
+                # the caller (and the GUI) knows the swap did not take. _config is
+                # left pointing at the old, still-live configuration.
+                logger.warning("reconfigure_hotkeys failed; restoring previous hotkey")
+                with contextlib.suppress(Exception):
+                    old_provider.start(
+                        on_press=self._on_press,
+                        on_release=self._on_release,
+                        on_cancel=self._on_cancel,
+                    )
+                raise
+            self._hotkeys = new_provider
+            self._config = new_config
 
     # ------------------------------------------------------------------
     # Hotkey callbacks (run on pynput listener thread)

@@ -25,6 +25,11 @@ from typing import Any, Protocol
 from seda.config import HotkeysConfig, select_push_to_talk
 from seda.errors import HotkeyError
 
+# Bound (seconds) for joining a listener thread in stop(). Long enough for an
+# in-flight callback to finish before a live re-registration swaps providers,
+# short enough that a wedged listener can never hang teardown/shutdown.
+_LISTENER_JOIN_TIMEOUT_S = 1.0
+
 
 class HotkeyProvider(Protocol):
     """Minimal interface for global hotkey listeners."""
@@ -152,6 +157,58 @@ def _chord_modifier_names(hotkey: str) -> frozenset[str]:
         if bare in _MODIFIER_ALIASES:
             names |= _MODIFIER_ALIASES[bare]
     return frozenset(names)
+
+
+# Canonical modifier order for a serialized chord. Fixed so that a captured
+# chord serializes identically no matter what order the modifiers were pressed
+# in — {shift, ctrl} and {ctrl, shift} must both become "<ctrl>+<shift>+...".
+_MODIFIER_ORDER: tuple[str, ...] = ("ctrl", "alt", "shift", "cmd")
+
+# Inverse of _MODIFIER_ALIASES: every left/right/variant modifier name mapped
+# back to its canonical base ("ctrl_l" -> "ctrl"). Built from the single source
+# of truth above so the two never drift.
+_MODIFIER_BASE: dict[str, str] = {
+    variant: base for base, variants in _MODIFIER_ALIASES.items() for variant in variants
+}
+
+
+def key_to_token(key: Any) -> str | None:
+    """Map a live pynput key to its bare config token, or ``None`` if unencodable.
+
+    The chord-capture widget (#89) receives ``pynput.keyboard.Key`` /
+    ``KeyCode`` objects; config stores bare tokens. A modifier (``ctrl_l``)
+    collapses to its canonical base (``ctrl``) so left/right variants serialize
+    identically; a named key (``space``, ``f5``) uses its ``.name``; a character
+    key uses its ``.char``. A key that carries neither (e.g. a dead ``KeyCode``
+    with ``char is None``) returns ``None`` — the caller treats that as "not a
+    usable trigger" rather than encoding a token the provider can't parse.
+    """
+    name = getattr(key, "name", None)
+    if isinstance(name, str):
+        return _MODIFIER_BASE.get(name, name)
+    char = getattr(key, "char", None)
+    if isinstance(char, str):
+        return char
+    return None
+
+
+def serialize_chord(modifiers: frozenset[str], trigger: str) -> str:
+    """Serialize canonical modifier bases + a bare trigger into a config chord.
+
+    Produces the config format (``<ctrl>+<shift>+space``): each modifier wrapped
+    in ``<>`` in the fixed :data:`_MODIFIER_ORDER`, followed by the bare trigger
+    (``space`` / ``f5`` / a single char like ``d`` — never bracketed, matching
+    the ``push_to_talk`` idiom that :func:`_normalize_hotkey` expects). Ordering
+    is deterministic so a chord captured as ``⇧⌃Space`` and one captured as
+    ``⌃⇧Space`` serialize to the identical string. Unknown modifier names (not
+    in the canonical order) are appended after the known ones, sorted, so nothing
+    is silently dropped.
+    """
+    known = [m for m in _MODIFIER_ORDER if m in modifiers]
+    extra = sorted(modifiers - set(_MODIFIER_ORDER))
+    parts = [f"<{m}>" for m in (*known, *extra)]
+    parts.append(trigger)
+    return "+".join(parts)
 
 
 class _ChordSuppressor:
@@ -375,13 +432,29 @@ class PynputHotkeyProvider:
             raise HotkeyError(f"could not register cancel hotkey: {exc}") from exc
 
     def stop(self) -> None:
-        """Stop both hotkey listeners."""
+        """Stop both hotkey listeners.
+
+        pynput's ``Listener`` is a ``threading.Thread``; ``.stop()`` only signals
+        it and returns without joining, so an in-flight callback can still be
+        running on the listener thread after ``stop()`` returns. For a live
+        re-registration (:meth:`AppController.reconfigure_hotkeys`) that matters:
+        the swap must not install a new listener while the old thread is mid-
+        callback. So we ``join`` each thread with a short bound — long enough for
+        a dispatched callback to finish, short enough that a wedged listener can
+        never hang shutdown. A missed join (timeout) is swallowed: teardown must
+        never block indefinitely on the OS.
+        """
         for attr in ("_listener", "_cancel_listener"):
             listener = getattr(self, attr)
             setattr(self, attr, None)
             if listener is not None:
                 with contextlib.suppress(Exception):
                     listener.stop()
+                # Best-effort join so no old-thread callback runs past stop().
+                join = getattr(listener, "join", None)
+                if callable(join):
+                    with contextlib.suppress(Exception):
+                        join(_LISTENER_JOIN_TIMEOUT_S)
 
     def _make_darwin_intercept(self) -> Callable[[Any, Any], Any]:
         """Build a macOS ``darwin_intercept`` that hides only the PTT chord.

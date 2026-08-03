@@ -54,9 +54,14 @@ def test_status_item_and_settings_build_without_objc_class_collision() -> None:
     try:
         # 2) the gui path's classes (status runner, Quit/OpenLogs/Doctor targets,
         #    AND the settings controller built for the menu) — this is where a
-        #    duplicate class name or a bad selector prototype crashes.
+        #    duplicate class name or a bad selector prototype crashes. Pass a real
+        #    on_hotkey_captured so the #89 capture selectors (recordHotkey:,
+        #    _capture_event, _disarm_capture) are defined + the Record button armed,
+        #    exercising the selector-registration path a BadPrototypeError would hit.
         app = NSApplication.sharedApplication()
-        teardown_extra = host._build_status_item(app, {"flag": False}, None)
+        teardown_extra = host._build_status_item(
+            app, {"flag": False}, None, on_hotkey_captured=lambda _chord: None
+        )
         try:
             assert callable(teardown_extra)
         finally:
