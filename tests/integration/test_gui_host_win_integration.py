@@ -19,6 +19,13 @@ run skips them; they run only on a real Windows box (``pytest -m integration``).
   / eat clicks while raising nowhere. This reads the effective ex-style back with
   ``GetWindowLongPtrW(GWL_EXSTYLE)`` and asserts both decisive bits are present.
 
+- **G3 — IDLE panel-shrink actually applied (#79).** The ``UpdateLayeredWindow``
+  ``psize`` *is* the window size, but a mis-wired geom tuple could blit the full
+  160×48 while intending 48×24 and raise nowhere (the shrink silently no-ops). This
+  reads the real window rect back with ``GetWindowRect`` and asserts it is 48×24 in
+  IDLE and 160×48 in an active mode — the on-hardware backstop for the pure-Python
+  ``_mode_size``/``_placement`` geometry the T1 unit tests pin.
+
 These mirror the by-eye macOS boundary of ADR-0005: everything provable without
 hardware is a T1 unit test; only what genuinely needs a real window lands here.
 """
@@ -99,5 +106,52 @@ def test_win_layered_transparent_style_applied() -> None:
         ex = _effective_ex_style(overlay._hwnd)
         assert ex & WS_EX_LAYERED, "WS_EX_LAYERED missing — window would render opaque"
         assert ex & WS_EX_TRANSPARENT, "WS_EX_TRANSPARENT missing — window would eat clicks"
+    finally:
+        overlay.teardown()
+
+
+def _window_size(hwnd: object) -> tuple[int, int]:
+    """Read the real window's on-screen size (w, h) via ``GetWindowRect``.
+
+    Declared locally (test-only diagnostic read; the production host never queries
+    its own rect back). ``GetWindowRect`` fills a ``RECT``; the layered window's rect
+    is set by ``UpdateLayeredWindow``'s ``psize``, so this reflects the shipped blit.
+    """
+    windll = ctypes.windll  # type: ignore[attr-defined, unused-ignore]
+    user32 = windll.user32
+    from ctypes import wintypes
+
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise ctypes.WinError()  # type: ignore[attr-defined, unused-ignore]
+    return (rect.right - rect.left, rect.bottom - rect.top)
+
+
+def test_win_idle_panel_shrinks_to_48x24() -> None:
+    """G3: the real layered window physically shrinks to 48×24 in IDLE, grows to 160×48 (#79).
+
+    Reads the window rect back after each ``set_mode`` — the ULW ``psize`` must have
+    actually applied. A mis-wired geom (blitting the full panel while intending the
+    chip) raises nowhere; this is the only place that catches a silent no-op shrink.
+    """
+    from seda.gui.host_win import _IDLE_H, _IDLE_W, _PANEL_H, _PANEL_W
+    from seda.notifications import HudMode
+
+    overlay = build_overlay(lambda: 0.0)
+    try:
+        assert overlay._hwnd is not None, "build_overlay must create a real HWND"
+        overlay.show()
+
+        overlay.set_mode(HudMode.IDLE)  # set_mode's immediate tick blits the shrunk sub-rect
+        assert _window_size(overlay._hwnd) == (_IDLE_W, _IDLE_H), (
+            "IDLE window must be 48×24 (the sub-rect blit actually applied)"
+        )
+
+        overlay.set_mode(HudMode.LISTENING)  # grow back to the full band
+        assert _window_size(overlay._hwnd) == (_PANEL_W, _PANEL_H), (
+            "active window must grow back to 160×48"
+        )
     finally:
         overlay.teardown()

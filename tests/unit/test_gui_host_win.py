@@ -577,6 +577,11 @@ def test_runtime_monitor_geometry_failure_keeps_last_position(
     kept = host_win._placement(host_win._PANEL_W, host_win._PANEL_H)  # must not raise
 
     assert kept == good, "a failed geometry query reuses the last-good work area"
+
+
+def test_teardown_step_raising_never_skips_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """One teardown step raising never skips the rest — catalog F1."""
     overlay = _built_overlay(monkeypatch)
     called: list[str] = []
@@ -673,12 +678,80 @@ def test_interval_ms_selects_idle_vs_active() -> None:
 
 
 def test_set_mode_idle_redraws_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
-    """set_mode redraws now (not one idle interval later) — the mode flip is visible."""
+    """set_mode redraws now (not one idle interval later) — the mode flip is visible.
+
+    Also asserts the immediate repaint blits the *shrunk* 48×24 rect (not the full
+    160×48): the shrink rides the same immediate tick, so the flip→shrink is one
+    marshalled turn — dimension-matched, cannot tear (#79, parity spec Part 4).
+    """
     overlay = _built_overlay(monkeypatch)
     painted: list[str] = []
+    blits: list[tuple[int, int, int, int]] = []
     monkeypatch.setattr(host_win, "_paint", lambda *_a, **_k: painted.append("paint"))
+    monkeypatch.setattr(host_win, "_blit", lambda _h, _b, geom: blits.append(geom))
     overlay.set_mode(HudMode.IDLE)
     assert painted, "set_mode triggers an immediate repaint via the stored tick"
+    assert blits, "the immediate repaint blits"
+    assert blits[-1][2:] == (host_win._IDLE_W, host_win._IDLE_H), (
+        "IDLE flip blits the 48×24 chip immediately (ULW psize = the shrunk sub-rect)"
+    )
+
+
+def test_mode_size_idle_shrinks_active_fills() -> None:
+    """_mode_size is the single source of truth: IDLE => 48×24 chip, else 160×48."""
+    assert host_win._mode_size(HudMode.IDLE) == (host_win._IDLE_W, host_win._IDLE_H)
+    assert host_win._mode_size(HudMode.IDLE) == (48, 24)
+    assert host_win._mode_size(HudMode.LISTENING) == (host_win._PANEL_W, host_win._PANEL_H)
+    assert host_win._mode_size(HudMode.BUSY) == (host_win._PANEL_W, host_win._PANEL_H)
+    assert host_win._mode_size(HudMode.LISTENING) == (160, 48)
+
+
+def test_tick_blits_mode_sized_subrect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tick blits the mode footprint: IDLE the 48×24 top-left sub-rect, active 160×48.
+
+    This is the load-bearing ULW ``psize`` assertion — the visible window size *is*
+    ``geom[2:]`` (``_blit`` sets ``SIZE(w, h)`` from it), so a shrunk geom is the
+    whole Option-B shrink. _paint and _blit must receive the *same* size in one tick.
+    """
+    overlay = _built_overlay(monkeypatch)
+    assert overlay._state is not None
+    tick = overlay._state["tick"]
+    paint_sizes: list[tuple[int, int]] = []
+    blits: list[tuple[int, int, int, int]] = []
+    monkeypatch.setattr(host_win, "_paint", lambda _b, _s, size: paint_sizes.append(size))
+    monkeypatch.setattr(host_win, "_blit", lambda _h, _b, geom: blits.append(geom))
+
+    overlay._state["mode"] = HudMode.IDLE
+    tick()
+    assert blits[-1][2:] == (host_win._IDLE_W, host_win._IDLE_H), "IDLE tick blits 48×24"
+    assert paint_sizes[-1] == (host_win._IDLE_W, host_win._IDLE_H), "IDLE paints into 48×24"
+    assert paint_sizes[-1] == blits[-1][2:], "one tick: paint-size == blit-size (no tear)"
+
+    overlay._state["mode"] = HudMode.LISTENING
+    tick()
+    assert blits[-1][2:] == (host_win._PANEL_W, host_win._PANEL_H), "active tick blits 160×48"
+    assert paint_sizes[-1] == blits[-1][2:], "active: paint-size == blit-size"
+
+
+def test_placement_idle_recentres_on_active_footprint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The IDLE chip recentres on the active 160×48 footprint's centre (macOS parity).
+
+    Two invariants: (1) active placement is byte-identical to the pre-#79 formula so
+    LISTENING/BUSY never move; (2) the idle chip's centre equals the active panel's
+    centre on both axes (the Win32 mirror of macOS ``_set_mode``).
+    """
+    monkeypatch.setattr(host_win, "_monitor_geometry", lambda: (0, 0, 1920, 1080))
+
+    ax, ay, aw, ah = host_win._placement(host_win._PANEL_W, host_win._PANEL_H)
+    # (1) No regression: exactly the shipped active formula.
+    assert (ax, ay) == (0 + ((1920 - 0) - 160) // 2, 1080 - 48 - 80)
+    assert (aw, ah) == (160, 48)
+
+    ix, iy, iw, ih = host_win._placement(host_win._IDLE_W, host_win._IDLE_H)
+    assert (iw, ih) == (48, 24)
+    # (2) Same centre on both axes as the active footprint.
+    assert ix + iw / 2 == ax + aw / 2, "idle chip is horizontally centred on the active panel"
+    assert iy + ih / 2 == ay + ah / 2, "idle chip is vertically centred on the active band"
 
 
 def test_wndproc_ref_is_held_on_the_overlay(monkeypatch: pytest.MonkeyPatch) -> None:
