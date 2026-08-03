@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import io
 
+import pytest
+
 from seda.notifications import (
+    HUD_ACTIVE_HZ,
+    HUD_IDLE_HZ,
+    HUD_IDLE_SHIMMER_AMP,
+    HUD_IDLE_SHIMMER_BASE,
     ConsoleNotifier,
     FanOutNotifier,
     HudMode,
     NotificationEvent,
     OverlayNotifier,
+    hud_idle_shimmer,
+    hud_phase_seconds,
+    hud_redraw_hz,
 )
 
 
@@ -182,9 +191,19 @@ class TestOverlayNotifier:
         # TRANSCRIBING must not change visibility or mode (busy is already set).
         n.notify(NotificationEvent.TRANSCRIBING)
         n.notify(NotificationEvent.SUCCESS)
-        assert calls == ["show", "mode:listening", "mode:busy", "hide"]
+        # The terminal SUCCESS settles the persistent HUD back to IDLE, still shown
+        # (ADR-0007 §2 — was "hide" under the old ephemeral contract).
+        assert calls == ["show", "mode:listening", "mode:busy", "mode:idle"]
 
-    def test_terminal_events_hide(self) -> None:
+    def test_ready_shows_in_idle_mode(self) -> None:
+        n, calls = self._make()
+        # READY is the first-show trigger (ADR-0007 §2) — was ignored before.
+        n.notify(NotificationEvent.READY)
+        assert calls == ["show", "mode:idle"]
+
+    def test_terminal_events_settle_to_idle_and_stay_shown(self) -> None:
+        # Was test_terminal_events_hide: terminals no longer hide, they set IDLE
+        # and keep the panel shown (ADR-0007 §2/§3 — only teardown removes it).
         for terminal in (
             NotificationEvent.CANCELLED,
             NotificationEvent.SUCCESS,
@@ -193,23 +212,22 @@ class TestOverlayNotifier:
             n, calls = self._make()
             n.notify(NotificationEvent.RECORDING)
             n.notify(terminal)
-            assert calls == ["show", "mode:listening", "hide"], terminal
+            assert calls == ["show", "mode:listening", "mode:idle"], terminal
+            assert "hide" not in calls, terminal
 
-    def test_ready_and_transcribing_are_ignored(self) -> None:
+    def test_transcribing_is_ignored(self) -> None:
+        # READY now shows (see test_ready_shows_in_idle_mode); only TRANSCRIBING
+        # remains a no-op in the event→mode mapping.
         n, calls = self._make()
-        for ignored in (
-            NotificationEvent.READY,
-            NotificationEvent.TRANSCRIBING,
-        ):
-            n.notify(ignored)
+        n.notify(NotificationEvent.TRANSCRIBING)
         assert calls == []
 
     def test_show_is_idempotent_but_mode_reasserts(self) -> None:
         n, calls = self._make()
         n.notify(NotificationEvent.RECORDING)
         n.notify(NotificationEvent.RECORDING)
-        # Double show collapses to one; the listening mode is set each time
-        # (cheap + idempotent — re-setting the same mode just redraws).
+        # Double show collapses to one (one-shot latch); the listening mode is set
+        # each time (cheap + idempotent — re-setting the same mode just redraws).
         assert calls == ["show", "mode:listening", "mode:listening"]
 
     def test_busy_reassert_while_busy_does_not_reshow(self) -> None:
@@ -218,16 +236,39 @@ class TestOverlayNotifier:
         n.notify(NotificationEvent.BUSY)  # e.g. press-while-busy nudge
         assert calls == ["show", "mode:busy", "mode:busy"]
 
-    def test_hide_is_idempotent(self) -> None:
+    def test_full_cycle_shows_once_and_never_hides(self) -> None:
+        # The persistent-companion guarantee (ADR-0007 §3/§4): across a full
+        # READY→record→busy→terminal→record cycle the panel shows EXACTLY once and
+        # nothing ever hides — every beat after the first is a flicker-free mode flip.
         n, calls = self._make()
-        # Hide before any show is a no-op (already hidden).
-        n.notify(NotificationEvent.CANCELLED)
-        assert calls == []
-        # After a show, two hides collapse to one.
-        n.notify(NotificationEvent.RECORDING)
-        n.notify(NotificationEvent.SUCCESS)
-        n.notify(NotificationEvent.ERROR)
-        assert calls == ["show", "mode:listening", "hide"]
+        for event in (
+            NotificationEvent.READY,
+            NotificationEvent.RECORDING,
+            NotificationEvent.BUSY,
+            NotificationEvent.SUCCESS,
+            NotificationEvent.RECORDING,
+            NotificationEvent.CANCELLED,
+        ):
+            n.notify(event)
+        assert calls.count("show") == 1, "panel shows exactly once"
+        assert "hide" not in calls, "no event ever hides the persistent HUD"
+        assert calls == [
+            "show",
+            "mode:idle",
+            "mode:listening",
+            "mode:busy",
+            "mode:idle",
+            "mode:listening",
+            "mode:idle",
+        ]
+
+    def test_terminal_self_heals_a_missed_ready_show(self) -> None:
+        # If the READY show is ever missed (startup dispatch race), the next event —
+        # here a terminal — still carries show=True, so the latch self-heals and the
+        # HUD comes up in IDLE rather than staying invisible for the session (§4).
+        n, calls = self._make()
+        n.notify(NotificationEvent.SUCCESS)  # no prior READY/RECORDING
+        assert calls == ["show", "mode:idle"]
 
     def test_show_hide_and_mode_are_marshalled_through_dispatch_main(self) -> None:
         dispatched: list[object] = []
@@ -279,3 +320,32 @@ class TestOverlayNotifier:
             dispatch_main=_bad_dispatch,
         )
         n.notify(NotificationEvent.RECORDING)  # must not raise
+
+
+class TestSharedHudCadence:
+    """The ADR-0007 §5 shared knobs: ONE rate + shimmer pair for both hosts."""
+
+    def test_redraw_hz_is_active_except_in_idle(self) -> None:
+        assert hud_redraw_hz(HudMode.IDLE) == HUD_IDLE_HZ
+        assert hud_redraw_hz(HudMode.LISTENING) == HUD_ACTIVE_HZ
+        assert hud_redraw_hz(HudMode.BUSY) == HUD_ACTIVE_HZ
+        # Idle must be the throttled rate (the whole point of §5's CPU saving).
+        assert HUD_IDLE_HZ < HUD_ACTIVE_HZ
+
+    def test_phase_seconds_normalizes_across_the_rate_change(self) -> None:
+        # The same real elapsed second is the same phase regardless of mode, so the
+        # shimmer period does not stretch 6× when the timer throttles to idle:
+        # one second is HUD_ACTIVE_HZ active frames or HUD_IDLE_HZ idle frames.
+        active_1s = hud_phase_seconds(HUD_ACTIVE_HZ, HudMode.LISTENING)
+        idle_1s = hud_phase_seconds(HUD_IDLE_HZ, HudMode.IDLE)
+        assert active_1s == pytest.approx(1.0)
+        assert idle_1s == pytest.approx(1.0)
+
+    def test_idle_shimmer_stays_within_a_visible_band(self) -> None:
+        # A slow breath around the base, floored well above zero ("alive at rest").
+        lo = HUD_IDLE_SHIMMER_BASE - HUD_IDLE_SHIMMER_AMP
+        hi = HUD_IDLE_SHIMMER_BASE + HUD_IDLE_SHIMMER_AMP
+        for frame in range(0, 200):
+            alpha = hud_idle_shimmer(frame)
+            assert lo - 1e-9 <= alpha <= hi + 1e-9
+        assert lo > 0.0, "the idle pill never fully vanishes"
