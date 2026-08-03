@@ -705,3 +705,106 @@ def test_models_download_offline_refuses() -> None:
     result = runner.invoke(app, ["models", "download", "small.en", "--offline"])
     assert result.exit_code == int(ExitCode.MODEL)
     assert "forbids downloads" in result.output
+
+
+# --- seda gui (#87) ---------------------------------------------------------
+
+
+def _stub_appcontroller(monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]) -> None:
+    """Replace AppController with a stub that records its kwargs and never runs."""
+    import seda.app as app_module
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+
+
+def test_gui_errors_off_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """seda gui is macOS-only: off-mac it errors and never touches the host (#87)."""
+    monkeypatch.setattr("seda.cli.sys.platform", "linux")
+    called: list[str] = []
+    import seda.gui.host as host_module
+
+    monkeypatch.setattr(
+        host_module, "run_with_menu_bar", lambda *a, **k: called.append("host") or True
+    )
+    result = runner.invoke(app, ["gui"])
+    assert result.exit_code != 0
+    assert "macOS-only" in result.output
+    assert called == [], "the host must not be invoked off macOS"
+
+
+def _gui_config(tmp_path: Path) -> Path:
+    """A minimal valid config file, so gui tests never read the real user config
+    (which, under a darwin-faked sys.platform on a Windows CI runner, can raise)."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+    return cfg
+
+
+def test_gui_hosts_on_macos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """On macOS, gui builds the controller and hands it to run_with_menu_bar (#87)."""
+    _force_macos_host(monkeypatch)
+    _stub_appcontroller(monkeypatch, {})
+    seen: dict[str, object] = {}
+    import seda.gui.host as host_module
+
+    def _fake_host(controller: object, **kwargs: object) -> bool:
+        seen["controller"] = controller
+        seen["kwargs"] = set(kwargs)
+        return True
+
+    monkeypatch.setattr(host_module, "run_with_menu_bar", _fake_host)
+    result = runner.invoke(app, ["gui", "--config", str(_gui_config(tmp_path))])
+    assert result.exit_code == 0
+    assert "controller" in seen
+    assert seen["kwargs"] == {"register_overlay", "register_status"}
+
+
+def test_gui_errors_when_host_declines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the host declines (AppKit broke), gui errors — no headless fallback (#87)."""
+    _force_macos_host(monkeypatch)
+    captured: dict[str, object] = {}
+    _stub_appcontroller(monkeypatch, captured)
+    import seda.gui.host as host_module
+
+    monkeypatch.setattr(host_module, "run_with_menu_bar", lambda *a, **k: False)
+    result = runner.invoke(app, ["gui", "--config", str(_gui_config(tmp_path))])
+    assert result.exit_code != 0
+    assert "ran" not in captured, "gui must NOT fall back to controller.run() headless"
+
+
+def test_gui_threads_flags_to_controller(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--no-paste / --no-cleanup thread through _build_controller into the controller (#87)."""
+    _force_macos_host(monkeypatch)
+    captured: dict[str, object] = {}
+    _stub_appcontroller(monkeypatch, captured)
+    import seda.gui.host as host_module
+
+    monkeypatch.setattr(host_module, "run_with_menu_bar", lambda *a, **k: True)
+    result = runner.invoke(
+        app, ["gui", "--config", str(_gui_config(tmp_path)), "--no-paste", "--no-cleanup"]
+    )
+    assert result.exit_code == 0
+    assert captured.get("copy_only") is True
+    assert captured.get("cleanup_enabled") is False
+
+
+def test_build_controller_shared_wiring(tmp_path: Path) -> None:
+    """_build_controller returns a controller + a fan-out with a ConsoleNotifier (#87)."""
+    from seda.cli import _build_controller
+    from seda.notifications import ConsoleNotifier, FanOutNotifier
+
+    controller, notifier, cfg = _build_controller(
+        _gui_config(tmp_path), no_paste=False, no_cleanup=True
+    )
+    assert isinstance(notifier, FanOutNotifier)
+    assert any(isinstance(n, ConsoleNotifier) for n in notifier._notifiers), (
+        "the fan-out always carries a ConsoleNotifier"
+    )
+    assert controller is not None and cfg is not None

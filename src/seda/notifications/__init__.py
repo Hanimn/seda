@@ -104,6 +104,31 @@ def hud_idle_shimmer(frame: int, mode: HudMode = HudMode.IDLE) -> float:
     )
 
 
+# Menu-bar status surface (#87). The macOS status item shows the same three
+# HudMode states the HUD does; these two pure helpers are the single home for its
+# label + glyph so the AppKit side (host._build_status_item) stays a thin
+# consumer and the mapping is unit-testable without AppKit. macOS-agnostic on
+# purpose — pure Python, importable on any platform / in CI.
+_STATUS_LABELS = {HudMode.IDLE: "Idle", HudMode.LISTENING: "Listening", HudMode.BUSY: "Busy"}
+# SF Symbol names (present on macOS 11+). A distinct glyph per state so the menu
+# bar reads at a glance; the AppKit side falls back to text if a name is missing.
+_STATUS_SYMBOLS = {
+    HudMode.IDLE: "circle",
+    HudMode.LISTENING: "waveform",
+    HudMode.BUSY: "hourglass",
+}
+
+
+def status_label(mode: HudMode) -> str:
+    """Menu-bar status text for *mode* (``Idle`` / ``Listening`` / ``Busy``)."""
+    return _STATUS_LABELS.get(mode, "Idle")
+
+
+def status_symbol(mode: HudMode) -> str:
+    """SF Symbol name for *mode*'s menu-bar glyph (distinct per state)."""
+    return _STATUS_SYMBOLS.get(mode, "circle")
+
+
 @runtime_checkable
 class Notifier(Protocol):
     """Anything that can surface a :class:`NotificationEvent` to the user.

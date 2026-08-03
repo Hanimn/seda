@@ -19,6 +19,8 @@ from seda.notifications import (
     hud_idle_shimmer,
     hud_phase_seconds,
     hud_redraw_hz,
+    status_label,
+    status_symbol,
 )
 
 
@@ -349,3 +351,61 @@ class TestSharedHudCadence:
             alpha = hud_idle_shimmer(frame)
             assert lo - 1e-9 <= alpha <= hi + 1e-9
         assert lo > 0.0, "the idle pill never fully vanishes"
+
+
+# --- Menu-bar status surface (#87) -----------------------------------------
+
+
+def test_status_label_maps_each_mode() -> None:
+    """status_label() is the single home for the menu-bar status text (#87)."""
+    assert status_label(HudMode.IDLE) == "Idle"
+    assert status_label(HudMode.LISTENING) == "Listening"
+    assert status_label(HudMode.BUSY) == "Busy"
+
+
+def test_status_symbol_maps_each_mode() -> None:
+    """status_symbol() yields a distinct, non-empty SF Symbol name per mode (#87).
+
+    Distinctness so the three states read differently in the menu bar; non-empty
+    so the AppKit side always has a symbol name to try.
+    """
+    symbols = {
+        status_symbol(HudMode.IDLE),
+        status_symbol(HudMode.LISTENING),
+        status_symbol(HudMode.BUSY),
+    }
+    assert len(symbols) == 3, "each mode must map to a distinct symbol"
+    assert all(s for s in symbols), "symbol names are non-empty"
+
+
+def test_composed_set_mode_feeds_overlay_and_status() -> None:
+    """A composed set_mode fans the SAME HudMode to both the overlay and the status
+    surface, with the event->mode mapping single-sourced in OverlayNotifier (#87)."""
+    overlay_modes: list[HudMode] = []
+    status_modes: list[HudMode] = []
+
+    def _composed_set_mode(mode: HudMode) -> None:
+        overlay_modes.append(mode)  # stand-in for overlay.set_mode
+        status_modes.append(mode)  # stand-in for the status-item apply
+
+    # Drive through a real OverlayNotifier (synchronous dispatch) so the event->mode
+    # table (READY->IDLE, RECORDING->LISTENING, BUSY->BUSY, SUCCESS->IDLE) is the one
+    # exercised — the status surface must never re-derive it.
+    notifier = OverlayNotifier(
+        show=lambda: None,
+        hide=lambda: None,
+        set_mode=_composed_set_mode,
+        dispatch_main=lambda fn: fn(),
+    )
+    notifier.notify(NotificationEvent.READY)
+    notifier.notify(NotificationEvent.RECORDING)
+    notifier.notify(NotificationEvent.BUSY)
+    notifier.notify(NotificationEvent.SUCCESS)
+
+    assert overlay_modes == [
+        HudMode.IDLE,
+        HudMode.LISTENING,
+        HudMode.BUSY,
+        HudMode.IDLE,
+    ]
+    assert status_modes == overlay_modes, "status surface sees the identical mode stream"
