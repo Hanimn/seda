@@ -405,3 +405,59 @@ class TestSelectShortcut:
         from seda.config import PasteConfig
 
         assert select_shortcut(PasteConfig(), platform="darwin", active_app=None) == "cmd+v"
+
+
+class TestPasteWarm:
+    """warm() pre-builds the backend's platform machinery on the caller's thread,
+    so its macOS Carbon TIS init doesn't run lazily on the worker thread at first
+    paste (which crashes, #89)."""
+
+    def test_text_inserter_warm_delegates_to_backend(self) -> None:
+        warmed: list[str] = []
+
+        class _WarmBackend(FakePasteBackend):
+            def warm(self) -> None:
+                warmed.append("warmed")
+
+        inserter, _, _ = _inserter(paste_backend=_WarmBackend())
+        inserter.warm()
+        assert warmed == ["warmed"]
+
+    def test_text_inserter_warm_noop_when_backend_has_no_warm(self) -> None:
+        # FakePasteBackend has no warm(); TextInserter.warm must be a safe no-op.
+        inserter, _, _ = _inserter(paste_backend=FakePasteBackend())
+        inserter.warm()  # must not raise
+
+    def test_pynput_backend_warm_builds_controller_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import types
+        from unittest.mock import MagicMock
+
+        keyboard_mod = types.ModuleType("pynput.keyboard")
+        controller_cls = MagicMock(name="Controller")
+        keyboard_mod.Controller = controller_cls  # type: ignore[attr-defined]
+        pynput_mod = types.ModuleType("pynput")
+        pynput_mod.keyboard = keyboard_mod  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pynput", pynput_mod)
+        monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard_mod)
+
+        backend = PynputPasteBackend()
+        assert backend._controller is None
+        backend.warm()
+        # Built exactly once, and cached so a later paste reuses it.
+        controller_cls.assert_called_once()
+        cached = backend._controller
+        backend.warm()  # idempotent — no second construction
+        controller_cls.assert_called_once()
+        assert backend._controller is cached
+
+    def test_pynput_backend_warm_is_fail_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        # pynput unavailable (headless): warm must swallow the failure, not raise.
+        monkeypatch.setitem(sys.modules, "pynput", None)
+        backend = PynputPasteBackend()
+        backend.warm()  # must not raise
+        assert backend._controller is None

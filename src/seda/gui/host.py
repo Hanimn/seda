@@ -1227,6 +1227,13 @@ def _run_appkit_host(
     # already-populated attribute and never re-enters the racy path.
     _warm_input_source()
     _warm_accessibility_trust()
+    # Also warm the SENDER-side Carbon TIS init: the paste backend builds a pynput
+    # Controller (get_unicode_to_keycode_map) whose TIS call asserts the main
+    # queue. Built lazily it would run on the worker thread at first paste and
+    # crash (SIGTRAP, #89); build it here on the main thread. Best-effort inside
+    # warm_inserter (a headless/pynput failure is swallowed).
+    with contextlib.suppress(Exception):
+        controller.warm_inserter()
 
     # gui path: build the extra main-thread surface (the NSStatusBar item) now —
     # after warming, before controller.start(), on the owned main thread. Fail-open

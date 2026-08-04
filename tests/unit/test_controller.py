@@ -91,6 +91,7 @@ class _RecordingInserter:
     def __init__(self) -> None:
         self.inserted: list[str] = []
         self.copy_only_calls: list[bool] = []
+        self.warmed = 0
 
     def insert(self, text: str, *, copy_only: bool = False) -> object:
         from seda.input.paste import InsertionResult
@@ -98,6 +99,9 @@ class _RecordingInserter:
         self.inserted.append(text)
         self.copy_only_calls.append(copy_only)
         return InsertionResult(copied=True, pasted=not copy_only, restored=True)
+
+    def warm(self) -> None:
+        self.warmed += 1
 
 
 class _FakeRecorder:
@@ -842,3 +846,16 @@ class TestHotkeyCaptureGuard:
         provider.on_release()
         provider.on_cancel()
         assert ctrl._state_machine.state is AppState.IDLE
+
+
+class TestWarmInserter:
+    """warm_inserter() pre-builds the paste backend on the caller thread (#89)."""
+
+    def test_warm_inserter_delegates_to_inserter(self) -> None:
+        ctrl, _, _ = _make_controller()
+        # _make_controller injects a _RecordingInserter.
+        inserter = ctrl._inserter
+        assert isinstance(inserter, _RecordingInserter)
+        assert inserter.warmed == 0
+        ctrl.warm_inserter()
+        assert inserter.warmed == 1

@@ -148,6 +148,17 @@ class AppController:
         """
         return self._recorder.latest_level
 
+    def warm_inserter(self) -> None:
+        """Pre-build the text inserter's platform machinery on the caller's thread.
+
+        A GUI host (ADR-0001) calls this on the MAIN thread at startup so the
+        paste backend's macOS Carbon Text-Input-Source init happens there rather
+        than lazily on the worker thread at first paste — which crashes (SIGTRAP)
+        because that Carbon API asserts the main queue (#89). Best-effort; keeps
+        ``_inserter`` encapsulated.
+        """
+        self._inserter.warm()
+
     def start(self) -> None:
         """Load the model and start hotkey listening — the non-blocking setup.
 

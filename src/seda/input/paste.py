@@ -26,6 +26,7 @@ clipboard *contents* are never logged (§21).
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import time
 from collections.abc import Callable
@@ -113,6 +114,13 @@ class PasteBackend(Protocol):
         """Simulate pressing ``shortcut`` (e.g. ``"cmd+v"``).
 
         Raises :class:`PasteError` if the keystroke could not be delivered.
+        """
+        ...
+
+    def warm(self) -> None:
+        """Optionally pre-build platform machinery on the calling thread (#89).
+
+        Best-effort; a backend with no thread-sensitive init may no-op.
         """
         ...
 
@@ -212,6 +220,20 @@ class TextInserter:
         restored = self._maybe_restore(prior, payload)
         return InsertionResult(copied=True, pasted=True, restored=restored)
 
+    def warm(self) -> None:
+        """Pre-build the paste backend's platform machinery on the caller's thread.
+
+        Delegates to the backend's ``warm`` (if it has one) so its macOS Carbon
+        Text-Input-Source init runs on the main thread at startup rather than
+        lazily on the worker thread at first paste (#89). Best-effort — a backend
+        without ``warm`` (the ``PasteBackend`` Protocol makes it optional) or a
+        construction failure is a no-op.
+        """
+        warm = getattr(self._paste_backend, "warm", None)
+        if callable(warm):
+            with contextlib.suppress(Exception):
+                warm()
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -275,6 +297,23 @@ class PynputPasteBackend:
 
     def __init__(self) -> None:
         self._controller: object | None = None
+
+    def warm(self) -> None:
+        """Pre-build the pynput ``Controller`` so its Carbon Text-Input-Source
+        init happens on the CALLER's thread (#89).
+
+        ``Controller.__init__`` calls ``get_unicode_to_keycode_map()``, which hits
+        a Carbon TIS API that asserts it must run on the macOS main queue —
+        building it lazily on the ThreadPoolExecutor worker thread at first paste
+        crashes (SIGTRAP). Calling ``warm()`` once on the main thread at startup
+        builds and caches the controller there; the worker then reuses it.
+
+        Fully fail-open: on headless Linux / no display / missing pynput,
+        constructing the controller can raise, so the failure is swallowed — the
+        lazy build at first ``send_paste`` remains the fallback, unchanged.
+        """
+        with contextlib.suppress(Exception):
+            self._get_controller()
 
     def send_paste(self, shortcut: str) -> None:
         # Validate the shortcut BEFORE importing pynput. The Enter/Return
