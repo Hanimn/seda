@@ -530,3 +530,43 @@ class TestSerializeChordRoundTrip:
         # Must not raise — this is exactly PynputHotkeyProvider.start()'s parse path.
         parsed = keyboard.HotKey.parse(_normalize_hotkey(chord))
         assert len(parsed) == len(modifiers) + 1
+
+
+class _VkKey:
+    """A KeyCode-like stand-in carrying a mangled char + a stable vk (like a live
+    macOS Ctrl+letter release: char is a control char, vk is the physical key)."""
+
+    def __init__(self, char: str | None, vk: int | None) -> None:
+        self.char = char
+        self.name = None
+        self.vk = vk
+
+
+class TestReleasedKeyMatchesVk:
+    """_released_key_matches must match a modifier-mangled letter release by its
+    stable virtual keycode (issue #89 — otherwise Ctrl+letter sticks in listening)."""
+
+    def test_ctrl_mangled_letter_matches_by_vk(self) -> None:
+        from seda.input.hotkeys import _released_key_matches
+
+        # Ctrl+M release: char mangled to '\r' but vk=46 (the physical 'm' key).
+        mangled = _VkKey(char="\r", vk=46)
+        # Without the trigger vk, the char check misses (the original bug):
+        assert _released_key_matches(mangled, "m") is False
+        # With the trigger vk, it matches:
+        assert _released_key_matches(mangled, "m", 46) is True
+
+    def test_modifier_release_does_not_match_trigger_vk(self) -> None:
+        from seda.input.hotkeys import _released_key_matches
+
+        # A ctrl release (vk 59) must NOT match an 'm' trigger (vk 46) — issue #10:
+        # releasing a modifier while the chord is held must not end the hold.
+        ctrl = _VkKey(char=None, vk=59)
+        assert _released_key_matches(ctrl, "m", 46) is False
+
+    def test_clean_char_still_matches_without_vk(self) -> None:
+        from seda.input.hotkeys import _released_key_matches
+
+        # The common (unmangled) case and the string test-path both still work.
+        assert _released_key_matches(_VkKey(char="m", vk=46), "m") is True
+        assert _released_key_matches("space", "space") is True

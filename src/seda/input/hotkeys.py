@@ -103,7 +103,7 @@ def _trigger_token(hotkey: str) -> str:
     return tokens[-1] if tokens else ""
 
 
-def _released_key_matches(key: Any, trigger: str) -> bool:
+def _released_key_matches(key: Any, trigger: str, trigger_vk: int | None = None) -> bool:
     """Whether the released *key* is the push-to-talk *trigger* key.
 
     Handles both the live path (a ``pynput.keyboard.Key`` with a ``.name`` such
@@ -111,7 +111,18 @@ def _released_key_matches(key: Any, trigger: str) -> bool:
     and the test path (a bare/bracketed string such as ``"space"`` or
     ``"<space>"``). Matching by name-or-char sidesteps the fact that
     ``HotKey.parse`` and live events represent named keys differently.
+
+    On macOS a letter released while a modifier is held arrives as a *control
+    character* (Ctrl+M -> ``\\r``), so its ``.char`` no longer equals the trigger
+    letter and the char check misses — leaving the app stuck "listening" because
+    the release never fires (issue #89). The **virtual keycode** (``.vk``) is
+    stable across modifiers, so when *trigger_vk* is known it is matched first as
+    the authoritative identity; ``.name``/``.char`` remain fallbacks.
     """
+    if trigger_vk is not None:
+        vk = getattr(key, "vk", None)
+        if isinstance(vk, int) and vk == trigger_vk:
+            return True
     name = getattr(key, "name", None)
     if isinstance(name, str):
         return name == trigger
@@ -121,6 +132,28 @@ def _released_key_matches(key: Any, trigger: str) -> bool:
     if isinstance(key, str):
         return key.strip("<>") == trigger
     return False
+
+
+def _trigger_vk(trigger: str) -> int | None:
+    """Return the macOS virtual keycode for a bare *trigger* token, or ``None``.
+
+    Used so a modifier-mangled letter release still matches (#89). Resolves via
+    pynput's own ``SYMBOLS`` table (macOS keycode -> char), inverted. macOS-only
+    and best-effort: on other platforms, an unknown char, or if pynput is
+    unavailable, returns ``None`` and matching falls back to ``.char``/``.name``.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        from pynput._util.darwin_vks import SYMBOLS
+    except Exception:  # noqa: BLE001 -- best-effort; fall back to char/name matching
+        return None
+    # SYMBOLS maps vk -> char; invert to char -> vk. A trigger like "space" is a
+    # named Key (not in SYMBOLS) and matches by name instead, so None is fine.
+    for vk, char in SYMBOLS.items():
+        if char == trigger:
+            return int(vk)
+    return None
 
 
 # Base-name aliases so a chord token like "ctrl" matches the left/right variants
@@ -344,6 +377,9 @@ class PynputHotkeyProvider:
         self._ptt_key = select_push_to_talk(config)
         # The non-modifier trigger key whose release ends a hold (issue #10).
         self._ptt_trigger = _trigger_token(self._ptt_key)
+        # Stable virtual keycode for the trigger, so a modifier-mangled letter
+        # release still matches (issue #89). None for named/unknown triggers.
+        self._ptt_trigger_vk = _trigger_vk(self._ptt_trigger)
         self._chord_keys = _chord_key_names(self._ptt_key)
         self._chord_modifiers = _chord_modifier_names(self._ptt_key)
         self._cancel_key = config.cancel
@@ -414,7 +450,10 @@ class PynputHotkeyProvider:
                 # modifier (or any other key) while the chord is held must NOT
                 # stop the recording — otherwise multi-key chords stop almost
                 # immediately after starting and capture no audio (issue #10).
-                if not _released_key_matches(key, self._ptt_trigger):
+                # The RAW key (not the canonical one) is passed: it retains .vk,
+                # the modifier-stable identity used to match a Ctrl-mangled letter
+                # release (issue #89); canonical() would strip vk.
+                if not _released_key_matches(key, self._ptt_trigger, self._ptt_trigger_vk):
                     return
                 self._on_ptt_release()
 
@@ -488,6 +527,7 @@ class PynputHotkeyProvider:
         with self._lock:
             self._ptt_key = new_chord
             self._ptt_trigger = _trigger_token(new_chord)
+            self._ptt_trigger_vk = _trigger_vk(self._ptt_trigger)
             self._chord_keys = _chord_key_names(new_chord)
             self._chord_modifiers = _chord_modifier_names(new_chord)
             self._suppressor = _ChordSuppressor(
