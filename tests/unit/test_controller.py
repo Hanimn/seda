@@ -33,6 +33,8 @@ class FakeHotkeyProvider:
         self.on_cancel: Callable[[], None] = lambda: None
         self.stopped = False
         self.start_count = 0
+        self.chord: str | None = None
+        self.set_calls: list[str] = []
 
     def start(
         self,
@@ -49,6 +51,11 @@ class FakeHotkeyProvider:
 
     def stop(self) -> None:
         self.stopped = True
+
+    def set_push_to_talk(self, new_chord: str) -> None:
+        # In-place chord swap (strategy B, #89). Never stops/rebuilds.
+        self.set_calls.append(new_chord)
+        self.chord = new_chord
 
 
 def _make_controller(
@@ -736,53 +743,29 @@ class TestNotifierInjection:
 
 
 class TestReconfigureHotkeys:
-    """AppController.reconfigure_hotkeys swaps the running provider at runtime.
+    """AppController.reconfigure_hotkeys swaps the PTT chord IN PLACE on the running
+    provider (strategy B, #89) — it never stops or rebuilds the listener (doing so
+    re-enters Carbon TIS and crashes on macOS)."""
 
-    The new provider is built via the overridable _new_hotkey_provider seam so
-    these tests never construct a real pynput-backed provider.
-    """
-
-    def _controller_with_swappable_provider(
-        self,
-    ) -> tuple[AppController, list[FakeHotkeyProvider], list[Config]]:
-        """Controller whose _new_hotkey_provider yields fresh FakeHotkeyProviders,
-        recording every config it was asked to build for."""
-        ctrl, first, _ = _make_controller()
-        built: list[FakeHotkeyProvider] = []
-        built_for: list[Config] = []
-
-        def _fake_new(hotkeys_config: Any) -> FakeHotkeyProvider:
-            p = FakeHotkeyProvider()
-            built.append(p)
-            return p
-
-        # Record which whole-config reconfigure was asked for by wrapping the
-        # real method after construction.
-        ctrl._new_hotkey_provider = _fake_new  # type: ignore[method-assign, assignment]
-        return ctrl, built, built_for
-
-    def test_stops_old_starts_new_with_same_callbacks(self) -> None:
-        ctrl, built, _ = self._controller_with_swappable_provider()
-        ctrl.start()  # moves STARTING -> IDLE and starts the (original) provider
-        old = ctrl._hotkeys
-        assert isinstance(old, FakeHotkeyProvider)
+    def test_swaps_chord_in_place_on_the_running_provider(self) -> None:
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()  # STARTING -> IDLE, starts the provider once
+        assert isinstance(provider, FakeHotkeyProvider)
+        assert provider.start_count == 1
 
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
         ctrl.reconfigure_hotkeys(new_cfg)
 
-        # Old provider stopped; a fresh one is now installed and started.
-        assert old.stopped is True
-        assert built, "a new provider should have been built"
-        new = built[-1]
-        assert ctrl._hotkeys is new
-        # Same bound callbacks re-registered (identity preserved).
-        assert new.on_press == ctrl._on_press
-        assert new.on_release == ctrl._on_release
-        assert new.on_cancel == ctrl._on_cancel
+        # In place: same provider object, chord swapped via set_push_to_talk,
+        # listener NEVER stopped or restarted.
+        assert ctrl._hotkeys is provider
+        assert provider.set_calls == ["<ctrl>+<alt>+m"]
+        assert provider.stopped is False
+        assert provider.start_count == 1, "the listener must NOT be restarted"
 
     def test_rebinds_config_on_success(self) -> None:
-        ctrl, _, _ = self._controller_with_swappable_provider()
+        ctrl, _, _ = _make_controller()
         ctrl.start()
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<cmd>+<shift>+d"
@@ -790,54 +773,42 @@ class TestReconfigureHotkeys:
         assert ctrl._config is new_cfg
 
     def test_no_swap_while_recording(self) -> None:
-        ctrl, built, _ = self._controller_with_swappable_provider()
+        ctrl, provider, _ = _make_controller()
         ctrl.start()
         ctrl._state_machine.transition(AppState.RECORDING)
-        old = ctrl._hotkeys
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
         ctrl.reconfigure_hotkeys(new_cfg)
-        # Provider untouched — swapping mid-recording would drop an in-flight cycle.
-        assert ctrl._hotkeys is old
-        assert built == []
+        # No swap mid-recording (would drop an in-flight cycle); config unchanged.
+        assert provider.set_calls == []
+        assert ctrl._config is not new_cfg
 
     def test_no_swap_while_stopping(self) -> None:
-        ctrl, built, _ = self._controller_with_swappable_provider()
+        ctrl, provider, _ = _make_controller()
         ctrl.start()
         ctrl._state_machine.transition(AppState.STOPPING)
-        old = ctrl._hotkeys
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
         ctrl.reconfigure_hotkeys(new_cfg)
-        assert ctrl._hotkeys is old
-        assert built == []
+        assert provider.set_calls == []
+        assert ctrl._config is not new_cfg
 
-    def test_failing_start_rolls_back_to_old_provider(self) -> None:
+    def test_invalid_chord_propagates_and_leaves_config_unchanged(self) -> None:
         from seda.errors import HotkeyError
 
-        ctrl, _, _ = _make_controller()
+        ctrl, provider, _ = _make_controller()
         ctrl.start()
-        old = ctrl._hotkeys
-        assert isinstance(old, FakeHotkeyProvider)
-        assert old.start_count == 1  # started once by ctrl.start()
 
-        def _boom(hotkeys_config: Any) -> FakeHotkeyProvider:
-            p = FakeHotkeyProvider()
+        def _raise(_chord: str) -> None:
+            raise HotkeyError("bad chord")
 
-            def _raise(*a: object, **k: object) -> None:
-                raise HotkeyError("bad chord")
-
-            p.start = _raise  # type: ignore[method-assign, assignment]
-            return p
-
-        ctrl._new_hotkey_provider = _boom  # type: ignore[method-assign, assignment]
+        provider.set_push_to_talk = _raise  # type: ignore[method-assign, assignment]
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
         with pytest.raises(HotkeyError):
             ctrl.reconfigure_hotkeys(new_cfg)
-
-        # Rollback: the OLD provider is still installed AND was restarted, so the
-        # app is never left hotkey-less. Config is NOT rebound (swap did not take).
-        assert ctrl._hotkeys is old
-        assert old.start_count == 2, "the old provider must be restarted on failure"
+        # set_push_to_talk validates before mutating, so the live chord is intact;
+        # config is NOT rebound. The listener was never stopped.
+        assert ctrl._hotkeys is provider
+        assert provider.stopped is False
         assert ctrl._config is not new_cfg

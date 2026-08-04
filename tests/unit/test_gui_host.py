@@ -583,40 +583,39 @@ class TestTriggerFromEvent:
 
 
 class TestRunCaptureApply:
-    """The captured-chord apply must run the sink OFF the caller thread and route
-    the UI update through dispatch_main — never inline on a main-thread callback
-    (the on-device SIGABRT). With no dispatch_main it runs inline (tests)."""
+    """The captured-chord apply must run the sink + UI update inside a marshalled
+    main-loop turn (via dispatch_main) — NOT nested inline in the NSEvent callback
+    and NOT on a background thread (both crash on-device, #89). With no
+    dispatch_main it runs inline (tests)."""
 
-    def test_sink_runs_off_thread_and_ui_marshalled_via_dispatch_main(self) -> None:
-        import threading
-
+    def test_sink_and_ui_run_inside_dispatch_main(self) -> None:
         from seda.gui.host import _run_capture_apply
 
-        caller = threading.current_thread().ident
-        sink_thread: dict[str, object] = {}
-        dispatched: list[str] = []
-        ok = threading.Event()
+        order: list[str] = []
+        seen_chord: list[str] = []
 
         def _sink(chord: str) -> str | None:
-            sink_thread["id"] = threading.current_thread().ident
-            sink_thread["chord"] = chord
+            seen_chord.append(chord)
+            order.append("sink")
             return None
 
         def _dispatch(fn: Callable[[], None]) -> None:
-            dispatched.append("marshalled")
+            # Everything (sink + on_ok) must run INSIDE this marshalled turn.
+            order.append("dispatch-enter")
             fn()
+            order.append("dispatch-exit")
 
         def _on_ok() -> None:
-            ok.set()
+            order.append("ok")
 
         def _on_err(_msg: str) -> None:  # pragma: no cover - success path
             pass
 
         _run_capture_apply("<ctrl>+d", _sink, _dispatch, _on_ok, _on_err)
-        assert ok.wait(timeout=5.0), "the success callback never ran"
-        assert sink_thread["chord"] == "<ctrl>+d"
-        assert sink_thread["id"] != caller, "the sink must run on a background thread"
-        assert dispatched == ["marshalled"], "UI update must be marshalled via dispatch_main"
+        assert seen_chord == ["<ctrl>+d"]
+        # The sink AND the success callback both ran between dispatch enter/exit —
+        # i.e. entirely within the marshalled main turn, nothing left on the caller.
+        assert order == ["dispatch-enter", "sink", "ok", "dispatch-exit"]
 
     def test_error_from_sink_routes_to_on_err(self) -> None:
         import threading

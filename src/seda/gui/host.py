@@ -550,24 +550,27 @@ def _run_capture_apply(
     on_ok: Callable[[], None],
     on_err: Callable[[str], None],
 ) -> None:
-    """Run a captured chord's apply-sink OFF the caller's thread and marshal the
-    UI result back via *dispatch_main* (#89).
+    """Apply a captured chord on a clean main-loop turn, then update the UI (#89).
 
-    ``on_captured`` persists the chord and does the LIVE pynput listener
-    re-registration. That re-init must NOT run nested inside a main-thread NSEvent
-    callback — doing so re-triggers the Carbon TIS / ``AXIsProcessTrusted``
-    first-init race :func:`_warm_input_source`/:func:`_warm_accessibility_trust`
-    guard against, aborting the process (SIGABRT) on device. So the sink runs on a
-    background daemon thread (the #90 Doctor pattern) and the UI mutation (*on_ok*
-    / *on_err*, which touch AppKit controls) is marshalled back to the main thread
-    via *dispatch_main*.
+    ``on_captured`` persists the chord and does the LIVE listener chord swap
+    (:meth:`AppController.reconfigure_hotkeys` → ``set_push_to_talk``). Two hard
+    constraints, both learned from on-device crash reports:
 
-    When *dispatch_main* is ``None`` (tests / no overlay wired) everything runs
-    inline — there is no main run loop to marshal onto, and no live listener to
-    race. Pure of AppKit: the UI mutations are injected callbacks, so this is
-    unit-testable on any platform.
+    * It must NOT run *nested inside* the NSEvent monitor callback — that turn is
+      the wrong context for touching the listener.
+    * It must NOT run on a *background thread* — the swap ultimately touches
+      Carbon Text-Input-Source state that asserts the main queue (SIGTRAP).
+
+    The correct home is a **fresh top-level main-loop turn**: marshal the whole
+    apply (swap + UI update) via *dispatch_main*, which enqueues it on the main
+    run loop rather than running it inline in the current callback. ``on_captured``
+    is now cheap and non-blocking (an in-place chord swap + a small TOML write),
+    so running it on the main turn is fine — no background thread needed.
+
+    When *dispatch_main* is ``None`` (tests / no overlay wired) it runs inline —
+    there is no main run loop to marshal onto. The UI mutations (*on_ok*/*on_err*)
+    are injected callbacks, so this is unit-testable on any platform.
     """
-    import threading
 
     def _apply() -> None:
         try:
@@ -575,20 +578,13 @@ def _run_capture_apply(
         except Exception:  # noqa: BLE001 -- the swap must never crash the app
             logger.warning("hotkey apply failed", exc_info=True)
             error = "could not apply shortcut (see logs)"
-
-        def _update() -> None:
-            if error:
-                on_err(error)
-            else:
-                on_ok()
-
-        if dispatch_main is not None:
-            dispatch_main(_update)
+        if error:
+            on_err(error)
         else:
-            _update()
+            on_ok()
 
     if dispatch_main is not None:
-        threading.Thread(target=_apply, name="seda-hotkey-apply", daemon=True).start()
+        dispatch_main(_apply)
     else:
         _apply()
 

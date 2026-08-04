@@ -364,6 +364,76 @@ class TestPynputHotkeyProviderStop:
         fake_cancel_listener.stop.assert_called_once()
 
 
+class TestSetPushToTalk:
+    """set_push_to_talk swaps the chord IN PLACE — the #89 crash-guard invariant is
+    that it NEVER rebuilds the listener (rebuilding re-enters Carbon TIS → crash)."""
+
+    def _started(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[PynputHotkeyProvider, object, object]:
+        pynput_mod, listener_cls, global_hotkeys_cls = _make_pynput_mock()
+        monkeypatch.setitem(sys.modules, "pynput", pynput_mod)
+        monkeypatch.setitem(sys.modules, "pynput.keyboard", pynput_mod.keyboard)
+
+        fake_ptt_listener = MagicMock()
+        fake_ptt_listener.canonical.side_effect = lambda key: key
+        listener_cls.return_value = fake_ptt_listener
+        fake_cancel_listener = MagicMock()
+        global_hotkeys_cls.return_value = fake_cancel_listener
+
+        provider = PynputHotkeyProvider(HotkeysConfig(push_to_talk="<ctrl>+<shift>+space"))
+        # Each HotKey(...) call returns a DISTINCT object so a rebuilt _ptt_hotkey
+        # is observably different (the class mock otherwise shares one return_value).
+        import pynput.keyboard as kb  # the mock
+
+        kb.HotKey.side_effect = lambda *a, **k: MagicMock(name="HotKey")  # type: ignore[attr-defined]
+        provider.start(on_press=lambda: None, on_release=lambda: None, on_cancel=lambda: None)
+        return provider, fake_ptt_listener, fake_cancel_listener
+
+    def test_swaps_chord_without_touching_the_listener(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider, ptt_listener, cancel_listener = self._started(monkeypatch)
+        listener_before = provider._listener
+        cancel_before = provider._cancel_listener
+        hotkey_before = provider._ptt_hotkey
+
+        provider.set_push_to_talk("<ctrl>+<alt>+m")
+
+        # Chord-derived state updated...
+        assert provider._ptt_key == "<ctrl>+<alt>+m"
+        assert provider._ptt_trigger == "m"
+        assert provider._ptt_hotkey is not hotkey_before  # a fresh HotKey object
+        # ...but the LIVE listeners are the SAME objects and were NEVER stopped.
+        assert provider._listener is listener_before
+        assert provider._cancel_listener is cancel_before
+        ptt_listener.stop.assert_not_called()
+        cancel_listener.stop.assert_not_called()
+
+    def test_invalid_chord_raises_and_leaves_state_intact(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from seda.errors import HotkeyError
+
+        provider, _, _ = self._started(monkeypatch)
+        before_key = provider._ptt_key
+        before_hotkey = provider._ptt_hotkey
+
+        # Make HotKey.parse raise for the new chord (invalid), as pynput would.
+        import pynput.keyboard as kb  # the mock
+
+        kb.HotKey.parse.side_effect = ValueError("bad chord")  # type: ignore[attr-defined]
+        try:
+            with pytest.raises(HotkeyError):
+                provider.set_push_to_talk("<not-a-key>")
+        finally:
+            kb.HotKey.parse.side_effect = None  # type: ignore[attr-defined]
+
+        # Validated before mutating: the live chord is untouched.
+        assert provider._ptt_key == before_key
+        assert provider._ptt_hotkey is before_hotkey
+
+
 # --- Seam 1 (#89): chord serializer — pynput key objects → config chord string ---
 
 
