@@ -755,7 +755,7 @@ class TestReconfigureHotkeys:
 
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
-        ctrl.reconfigure_hotkeys(new_cfg)
+        assert ctrl.reconfigure_hotkeys(new_cfg) is True
 
         # In place: same provider object, chord swapped via set_push_to_talk,
         # listener NEVER stopped or restarted.
@@ -769,7 +769,7 @@ class TestReconfigureHotkeys:
         ctrl.start()
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<cmd>+<shift>+d"
-        ctrl.reconfigure_hotkeys(new_cfg)
+        assert ctrl.reconfigure_hotkeys(new_cfg) is True
         assert ctrl._config is new_cfg
 
     def test_no_swap_while_recording(self) -> None:
@@ -778,8 +778,8 @@ class TestReconfigureHotkeys:
         ctrl._state_machine.transition(AppState.RECORDING)
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
-        ctrl.reconfigure_hotkeys(new_cfg)
-        # No swap mid-recording (would drop an in-flight cycle); config unchanged.
+        # Returns False (skipped) so the caller won't persist the unapplied chord.
+        assert ctrl.reconfigure_hotkeys(new_cfg) is False
         assert provider.set_calls == []
         assert ctrl._config is not new_cfg
 
@@ -789,7 +789,7 @@ class TestReconfigureHotkeys:
         ctrl._state_machine.transition(AppState.STOPPING)
         new_cfg = Config()
         new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
-        ctrl.reconfigure_hotkeys(new_cfg)
+        assert ctrl.reconfigure_hotkeys(new_cfg) is False
         assert provider.set_calls == []
         assert ctrl._config is not new_cfg
 
@@ -812,3 +812,33 @@ class TestReconfigureHotkeys:
         assert ctrl._hotkeys is provider
         assert provider.stopped is False
         assert ctrl._config is not new_cfg
+
+
+class TestHotkeyCaptureGuard:
+    """While capturing a new chord, the hotkey callbacks must be neutralized so
+    the capture keystrokes (seen by the global listener too) can't drive a phantom
+    dictation cycle that wedges the state machine (#89)."""
+
+    def test_on_press_is_ignored_while_capturing(self) -> None:
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()  # IDLE
+        ctrl.begin_hotkey_capture()
+
+        # A press arriving from the global listener during capture must NOT start
+        # recording — state stays IDLE.
+        provider.on_press()
+        assert ctrl._state_machine.state is AppState.IDLE
+
+        ctrl.end_hotkey_capture()
+        # Once capture ends, a press records normally again.
+        provider.on_press()
+        assert ctrl._state_machine.state is AppState.RECORDING
+
+    def test_release_and_cancel_ignored_while_capturing(self) -> None:
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()
+        ctrl.begin_hotkey_capture()
+        # Neither release nor cancel should move the state machine while capturing.
+        provider.on_release()
+        provider.on_cancel()
+        assert ctrl._state_machine.state is AppState.IDLE

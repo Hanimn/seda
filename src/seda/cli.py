@@ -427,14 +427,20 @@ def gui(
             return str(exc).splitlines()[-1][:80]
 
         try:
-            controller.reconfigure_hotkeys(new_cfg)
+            applied = controller.reconfigure_hotkeys(new_cfg)
         except HotkeyError:
             return f"'{chord}' is not a usable shortcut."
         except Exception:  # noqa: BLE001 -- never crash the GUI on a live swap
             get_logger().warning("live hotkey re-registration failed", exc_info=True)
             return "could not apply shortcut (see logs)"
 
-        # Persist only after the live swap succeeded.
+        if not applied:
+            # The swap was skipped (app was mid-dictation, not IDLE). Do NOT
+            # persist — the live listener still has the old chord, and writing the
+            # new one would leave disk and the running app disagreeing (#89).
+            return "busy — finish dictating, then try again"
+
+        # Persist only after the live swap actually applied.
         try:
             save_config(new_cfg, None)
         except Exception:  # noqa: BLE001 -- applied live; a persist miss is non-fatal

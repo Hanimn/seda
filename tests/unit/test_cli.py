@@ -827,8 +827,9 @@ def test_gui_on_hotkey_captured_persists_and_live_applies(
         def __init__(self, config: object, **kwargs: object) -> None:
             pass
 
-        def reconfigure_hotkeys(self, new_config: object) -> None:
+        def reconfigure_hotkeys(self, new_config: object) -> bool:
             reconfigured.append(new_config.hotkeys.push_to_talk)  # type: ignore[attr-defined]
+            return True  # applied
 
     monkeypatch.setattr(app_module, "AppController", _StubController)
 
@@ -859,3 +860,46 @@ def test_gui_on_hotkey_captured_persists_and_live_applies(
     # And the new chord is written to the default config file.
     persisted = load_config(cfg_path)
     assert persisted.hotkeys.push_to_talk == "<ctrl>+<alt>+m"
+
+
+def test_gui_on_hotkey_captured_skips_persist_when_swap_not_applied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If reconfigure_hotkeys returns False (app busy, not IDLE), the sink must NOT
+    persist — the live listener still has the old chord, so disk must not diverge
+    (#89)."""
+    import seda.app as app_module
+    import seda.gui.host as host_module
+    from seda.config import load_config
+
+    _force_macos_host(monkeypatch)
+
+    class _StubController:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            pass
+
+        def reconfigure_hotkeys(self, new_config: object) -> bool:
+            return False  # skipped — app not IDLE
+
+    monkeypatch.setattr(app_module, "AppController", _StubController)
+
+    cfg_path = tmp_path / "seda.toml"
+    cfg_path.write_text('[transcription]\nbackend = "fake"\n', encoding="utf-8")
+    monkeypatch.setattr("seda.config.default_config_path", lambda: cfg_path)
+
+    captured: dict[str, object] = {}
+
+    def _fake_host(controller: object, **kwargs: object) -> bool:
+        captured["on_hotkey_captured"] = kwargs["on_hotkey_captured"]
+        return True
+
+    monkeypatch.setattr(host_module, "run_with_menu_bar", _fake_host)
+    result = runner.invoke(app, ["gui", "--config", str(_gui_config(tmp_path))])
+    assert result.exit_code == 0
+
+    on_capture = captured["on_hotkey_captured"]
+    err = on_capture("<ctrl>+<alt>+m")
+    assert err is not None and "busy" in err, "a skipped swap must return a busy message"
+    # Config on disk is UNCHANGED (no push_to_talk written).
+    persisted = load_config(cfg_path)
+    assert persisted.hotkeys.push_to_talk == ""

@@ -127,6 +127,12 @@ class AppController:
         # an in-flight listener callback. Nothing else touches the provider
         # under contention, so a single lock is sufficient.
         self._hotkeys_lock = threading.Lock()
+        # While True, the hotkey callbacks are neutralized so the GUI's
+        # chord-capture keystrokes (seen by the global listener as well as the
+        # settings window's NSEvent monitor) cannot drive a phantom dictation
+        # cycle that would wedge the state machine (#89). Set via
+        # begin_hotkey_capture / end_hotkey_capture.
+        self._capturing = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -221,7 +227,24 @@ class AppController:
         # 6. Signal the main thread to exit.
         self._shutdown_event.set()
 
-    def reconfigure_hotkeys(self, new_config: Config) -> None:
+    def begin_hotkey_capture(self) -> None:
+        """Neutralize hotkey handling while the GUI captures a new chord (#89).
+
+        The settings window's chord-capture keystrokes are seen by the global
+        listener too (an app-local ``NSEvent`` monitor cannot shield pynput's
+        global tap), so without this they would drive a phantom dictation cycle
+        and wedge the state machine. Idempotent; paired with
+        :meth:`end_hotkey_capture` (called on capture done/cancel/window-close).
+        """
+        with self._hotkeys_lock:
+            self._capturing = True
+
+    def end_hotkey_capture(self) -> None:
+        """Re-enable hotkey handling after a capture (see :meth:`begin_hotkey_capture`)."""
+        with self._hotkeys_lock:
+            self._capturing = False
+
+    def reconfigure_hotkeys(self, new_config: Config) -> bool:
         """Change the push-to-talk chord on the running listener, live (#89).
 
         Swaps the chord **in place** on the existing provider
@@ -233,14 +256,12 @@ class AppController:
         the live callbacks read, so no listener thread is disturbed.
 
         Only swaps at the ``IDLE`` resting point — never mid-recording or during
-        shutdown, where a swap could drop an in-flight cycle. If the state isn't
-        ``IDLE`` the call is a no-op (the GUI keeps the old chord; retry once
-        dictation settles).
-
-        The new chord is validated inside ``set_push_to_talk`` before any state
-        changes, so an invalid chord raises ``HotkeyError`` with the live chord
-        left intact — no rollback needed (nothing was torn down). On success
-        ``self._config`` is rebound to *new_config*.
+        shutdown, where a swap could drop an in-flight cycle. Returns ``True`` if
+        the chord was applied, ``False`` if skipped because the app was not IDLE
+        (the caller must NOT persist a skipped chord — the live listener still has
+        the old one). An invalid chord raises ``HotkeyError`` (validated inside
+        ``set_push_to_talk`` before any state changes, so the live chord is left
+        intact). On success ``self._config`` is rebound to *new_config*.
         """
         with self._hotkeys_lock:
             if self._state_machine.state is not AppState.IDLE:
@@ -248,18 +269,23 @@ class AppController:
                     "reconfigure_hotkeys skipped: state is %s, not IDLE",
                     self._state_machine.state,
                 )
-                return
+                return False
 
             # Raises HotkeyError on an invalid chord, leaving the live chord
             # unchanged; let it propagate so the GUI surfaces the failure.
             self._hotkeys.set_push_to_talk(select_push_to_talk(new_config.hotkeys))
             self._config = new_config
+            return True
 
     # ------------------------------------------------------------------
     # Hotkey callbacks (run on pynput listener thread)
     # ------------------------------------------------------------------
 
     def _on_press(self) -> None:
+        if self._capturing:
+            # The GUI is capturing a new chord; ignore the keystrokes it types so
+            # they can't start a phantom recording (#89).
+            return
         state = self._state_machine.state
         if state is AppState.IDLE:
             try:
@@ -284,6 +310,8 @@ class AppController:
             self._notifier.notify(NotificationEvent.BUSY)
 
     def _on_release(self) -> None:
+        if self._capturing:
+            return
         try:
             self._state_machine.transition(AppState.PROCESSING_AUDIO)
         except InvalidTransitionError:
@@ -308,6 +336,8 @@ class AppController:
         self._pending_future = self._executor.submit(self._process_audio, audio)
 
     def _on_cancel(self) -> None:
+        if self._capturing:
+            return
         state = self._state_machine.state
         # Cancel is valid from RECORDING, PROCESSING_AUDIO, and TRANSCRIBING.
         if state not in (AppState.RECORDING, AppState.PROCESSING_AUDIO, AppState.TRANSCRIBING):

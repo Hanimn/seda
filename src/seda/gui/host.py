@@ -469,16 +469,18 @@ def _run_appkit_menu_bar_loop(
     app = NSApplication.sharedApplication()
 
     def _build_extra(app_: Any, stop_requested: dict[str, bool]) -> Callable[[], None]:
-        # overlay.dispatch_main marshals the live-swap UI update back to the main
-        # thread; the swap itself runs on a background thread (see the capture
-        # path in _build_settings_controller) so it never re-inits the pynput
-        # listener nested inside a main-thread NSEvent callback (SIGABRT risk).
+        # overlay.dispatch_main marshals the capture apply onto a clean main-loop
+        # turn. begin/end_hotkey_capture neutralize the controller's hotkey
+        # handling while the settings window captures a chord, so those keystrokes
+        # (also seen by the global listener) can't drive a phantom recording (#89).
         return _build_status_item(
             app_,
             stop_requested,
             register_status,
             on_hotkey_captured,
             overlay.dispatch_main,
+            controller.begin_hotkey_capture,
+            controller.end_hotkey_capture,
         )
 
     _run_appkit_host(controller, app, overlay, register_overlay, build_extra=_build_extra)
@@ -592,6 +594,8 @@ def _run_capture_apply(
 def _build_settings_controller(
     on_hotkey_captured: Callable[[str], str | None] | None = None,
     dispatch_main: Callable[[Callable[[], None]], None] | None = None,
+    on_capture_begin: Callable[[], None] | None = None,
+    on_capture_end: Callable[[], None] | None = None,
 ) -> Any:
     """Build the non-modal AppKit settings window controller (#88, #89).
 
@@ -820,6 +824,14 @@ def _build_settings_controller(
                 return
             self._status.setStringValue_("Press keys… (Esc to cancel)")
             self._record_button.setTitle_("Recording…")
+            # Neutralize the controller's hotkey handling for the duration of the
+            # capture: the keys the user presses are ALSO seen by the global
+            # listener (the NSEvent local monitor can't shield pynput's global
+            # tap), and without this they would drive a phantom recording that
+            # wedges the app (#89). Cleared in _disarm_capture.
+            if on_capture_begin is not None:
+                with contextlib.suppress(Exception):
+                    on_capture_begin()
 
             def _handler(event: Any) -> Any:
                 # Runs on the main thread for local key events. Returning None
@@ -891,6 +903,12 @@ def _build_settings_controller(
             if monitor is not None:
                 with contextlib.suppress(Exception):
                     NSEvent.removeMonitor_(monitor)
+                # Re-enable the controller's hotkey handling (paired with the
+                # on_capture_begin in recordHotkey_). Only when a capture was
+                # actually armed, so the end pairs with a begin.
+                if on_capture_end is not None:
+                    with contextlib.suppress(Exception):
+                        on_capture_end()
             with contextlib.suppress(Exception):
                 self._record_button.setTitle_("Record")
 
@@ -936,7 +954,9 @@ def _build_settings_controller(
                 edits["paste.multiline_policy"] = "copy_only" if want_copy_only else "preserve"
 
             if not edits:
-                self._status.setStringValue_("No changes.")
+                # Nothing to write, but the user asked to save — treat as done
+                # and close the window (they don't expect it to linger).
+                self._close_window()
                 return
 
             try:
@@ -948,7 +968,18 @@ def _build_settings_controller(
                 logger.warning("settings save failed", exc_info=True)
                 self._status.setStringValue_("save failed (see logs)")
                 return
-            self._status.setStringValue_("Saved. Restart to apply.")
+            # Saved successfully — close the window. (Non-hotkey fields are
+            # save-and-restart; the hotkey applies live via its own capture path.)
+            self._close_window()
+
+        @objc.python_method  # type: ignore[untyped-decorator]
+        def _close_window(self) -> None:
+            # performClose_ runs the standard close (honoring the delegate's
+            # windowWillClose_, which disarms any live capture monitor). Guarded
+            # so a close failure never leaves save() half-done.
+            with contextlib.suppress(Exception):
+                if self._window is not None:
+                    self._window.performClose_(None)
 
     return _SettingsController.alloc().init()
 
@@ -959,6 +990,8 @@ def _build_status_item(
     register_status: Callable[[Callable[[HudMode], None]], None] | None,
     on_hotkey_captured: Callable[[str], str | None] | None = None,
     dispatch_main: Callable[[Callable[[], None]], None] | None = None,
+    on_capture_begin: Callable[[], None] | None = None,
+    on_capture_end: Callable[[], None] | None = None,
 ) -> Callable[[], None]:
     """Create the ``NSStatusBar`` item + menu (Quit) and wire live status — issue #87.
 
@@ -1081,7 +1114,9 @@ def _build_status_item(
     doctor_target = _DoctorTarget.alloc().init()
 
     menu = NSMenu.alloc().init()
-    settings_controller = _build_settings_controller(on_hotkey_captured, dispatch_main)
+    settings_controller = _build_settings_controller(
+        on_hotkey_captured, dispatch_main, on_capture_begin, on_capture_end
+    )
     settings_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         "Settings…", "open:", ","
     )
