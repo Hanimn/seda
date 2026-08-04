@@ -525,3 +525,148 @@ def test_pump_ignores_when_no_stop_requested(monkeypatch: pytest.MonkeyPatch) ->
         platform="darwin",
     )
     assert events == [], "pump must not shut down or stop when no signal is pending"
+
+
+# --- _trigger_from_event: pure keycode/char → trigger mapping (#89) -----------
+
+
+class _FakeEvent:
+    """Minimal stand-in for an NSEvent key-down (keyCode + charactersIgnoringModifiers)."""
+
+    def __init__(self, keycode: int, chars: str) -> None:
+        self._keycode = keycode
+        self._chars = chars
+
+    def keyCode(self) -> int:  # noqa: N802 -- mirrors the ObjC selector
+        return self._keycode
+
+    def charactersIgnoringModifiers(self) -> str:  # noqa: N802 -- mirrors the ObjC selector
+        return self._chars
+
+
+class TestTriggerFromEvent:
+    def test_function_key_by_keycode(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        # F5 = keyCode 96; AppKit reports a PUA char, but the keycode map wins.
+        assert _trigger_from_event(_FakeEvent(96, "")) == "f5"
+
+    def test_space_by_keycode(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        assert _trigger_from_event(_FakeEvent(49, " ")) == "space"
+
+    def test_ordinary_char_lowercased(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        assert _trigger_from_event(_FakeEvent(2, "D")) == "d"
+
+    def test_modifier_only_keydown_returns_empty(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        # No non-modifier character yet — keep waiting for the trigger.
+        assert _trigger_from_event(_FakeEvent(59, "")) == ""
+
+    def test_unmapped_private_use_char_is_unencodable(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        # A PUA char with no keycode-map entry (some media key) → None (reject).
+        assert _trigger_from_event(_FakeEvent(999, "")) is None
+
+    def test_arrow_key_by_keycode(self) -> None:
+        from seda.gui.host import _trigger_from_event
+
+        assert _trigger_from_event(_FakeEvent(126, "")) == "up"
+
+
+# --- _run_capture_apply: off-thread sink + marshalled UI (#89 crash fix) ------
+
+
+class TestRunCaptureApply:
+    """The captured-chord apply must run the sink + UI update inside a marshalled
+    main-loop turn (via dispatch_main) — NOT nested inline in the NSEvent callback
+    and NOT on a background thread (both crash on-device, #89). With no
+    dispatch_main it runs inline (tests)."""
+
+    def test_sink_and_ui_run_inside_dispatch_main(self) -> None:
+        from seda.gui.host import _run_capture_apply
+
+        order: list[str] = []
+        seen_chord: list[str] = []
+
+        def _sink(chord: str) -> str | None:
+            seen_chord.append(chord)
+            order.append("sink")
+            return None
+
+        def _dispatch(fn: Callable[[], None]) -> None:
+            # Everything (sink + on_ok) must run INSIDE this marshalled turn.
+            order.append("dispatch-enter")
+            fn()
+            order.append("dispatch-exit")
+
+        def _on_ok() -> None:
+            order.append("ok")
+
+        def _on_err(_msg: str) -> None:  # pragma: no cover - success path
+            pass
+
+        _run_capture_apply("<ctrl>+d", _sink, _dispatch, _on_ok, _on_err)
+        assert seen_chord == ["<ctrl>+d"]
+        # The sink AND the success callback both ran between dispatch enter/exit —
+        # i.e. entirely within the marshalled main turn, nothing left on the caller.
+        assert order == ["dispatch-enter", "sink", "ok", "dispatch-exit"]
+
+    def test_error_from_sink_routes_to_on_err(self) -> None:
+        import threading
+
+        from seda.gui.host import _run_capture_apply
+
+        errs: list[str] = []
+        done = threading.Event()
+
+        def _sink(_chord: str) -> str | None:
+            return "'<ctrl>+x' is not a usable shortcut."
+
+        def _dispatch(fn: Callable[[], None]) -> None:
+            fn()
+
+        def _on_err(msg: str) -> None:
+            errs.append(msg)
+            done.set()
+
+        _run_capture_apply("<ctrl>+x", _sink, _dispatch, lambda: None, _on_err)
+        assert done.wait(timeout=5.0)
+        assert errs == ["'<ctrl>+x' is not a usable shortcut."]
+
+    def test_sink_exception_becomes_error_message(self) -> None:
+        import threading
+
+        from seda.gui.host import _run_capture_apply
+
+        errs: list[str] = []
+        done = threading.Event()
+
+        def _sink(_chord: str) -> str | None:
+            raise RuntimeError("boom")
+
+        def _dispatch(fn: Callable[[], None]) -> None:
+            fn()
+
+        def _on_err(msg: str) -> None:
+            errs.append(msg)
+            done.set()
+
+        _run_capture_apply("<ctrl>+d", _sink, _dispatch, lambda: None, _on_err)
+        assert done.wait(timeout=5.0)
+        assert errs and "see logs" in errs[0], "a sink crash must surface as an error"
+
+    def test_no_dispatch_main_runs_inline(self) -> None:
+        from seda.gui.host import _run_capture_apply
+
+        ran: list[str] = []
+        _run_capture_apply(
+            "<ctrl>+d", lambda _c: None, None, lambda: ran.append("ok"), lambda _m: None
+        )
+        # Inline: completes synchronously before returning (no thread to await).
+        assert ran == ["ok"]

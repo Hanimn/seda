@@ -38,6 +38,16 @@ class HotkeyProvider(Protocol):
 
     def stop(self) -> None: ...
 
+    def set_push_to_talk(self, new_chord: str) -> None:
+        """Swap the push-to-talk chord on the running listener, in place.
+
+        Must NOT reconstruct the underlying listener (on macOS that re-enters the
+        Carbon Text-Input-Source init and crashes — issue #89). Raises
+        :exc:`HotkeyError` on an unparseable chord, leaving the current chord
+        unchanged.
+        """
+        ...
+
 
 def _normalize_hotkey(s: str) -> str:
     """Wrap bare named keys (e.g. ``space``) with ``<>`` for pynput parsing.
@@ -93,7 +103,7 @@ def _trigger_token(hotkey: str) -> str:
     return tokens[-1] if tokens else ""
 
 
-def _released_key_matches(key: Any, trigger: str) -> bool:
+def _released_key_matches(key: Any, trigger: str, trigger_vk: int | None = None) -> bool:
     """Whether the released *key* is the push-to-talk *trigger* key.
 
     Handles both the live path (a ``pynput.keyboard.Key`` with a ``.name`` such
@@ -101,7 +111,18 @@ def _released_key_matches(key: Any, trigger: str) -> bool:
     and the test path (a bare/bracketed string such as ``"space"`` or
     ``"<space>"``). Matching by name-or-char sidesteps the fact that
     ``HotKey.parse`` and live events represent named keys differently.
+
+    On macOS a letter released while a modifier is held arrives as a *control
+    character* (Ctrl+M -> ``\\r``), so its ``.char`` no longer equals the trigger
+    letter and the char check misses — leaving the app stuck "listening" because
+    the release never fires (issue #89). The **virtual keycode** (``.vk``) is
+    stable across modifiers, so when *trigger_vk* is known it is matched first as
+    the authoritative identity; ``.name``/``.char`` remain fallbacks.
     """
+    if trigger_vk is not None:
+        vk = getattr(key, "vk", None)
+        if isinstance(vk, int) and vk == trigger_vk:
+            return True
     name = getattr(key, "name", None)
     if isinstance(name, str):
         return name == trigger
@@ -111,6 +132,28 @@ def _released_key_matches(key: Any, trigger: str) -> bool:
     if isinstance(key, str):
         return key.strip("<>") == trigger
     return False
+
+
+def _trigger_vk(trigger: str) -> int | None:
+    """Return the macOS virtual keycode for a bare *trigger* token, or ``None``.
+
+    Used so a modifier-mangled letter release still matches (#89). Resolves via
+    pynput's own ``SYMBOLS`` table (macOS keycode -> char), inverted. macOS-only
+    and best-effort: on other platforms, an unknown char, or if pynput is
+    unavailable, returns ``None`` and matching falls back to ``.char``/``.name``.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        from pynput._util.darwin_vks import SYMBOLS
+    except Exception:  # noqa: BLE001 -- best-effort; fall back to char/name matching
+        return None
+    # SYMBOLS maps vk -> char; invert to char -> vk. A trigger like "space" is a
+    # named Key (not in SYMBOLS) and matches by name instead, so None is fine.
+    for vk, char in SYMBOLS.items():
+        if char == trigger:
+            return int(vk)
+    return None
 
 
 # Base-name aliases so a chord token like "ctrl" matches the left/right variants
@@ -152,6 +195,58 @@ def _chord_modifier_names(hotkey: str) -> frozenset[str]:
         if bare in _MODIFIER_ALIASES:
             names |= _MODIFIER_ALIASES[bare]
     return frozenset(names)
+
+
+# Canonical modifier order for a serialized chord. Fixed so that a captured
+# chord serializes identically no matter what order the modifiers were pressed
+# in — {shift, ctrl} and {ctrl, shift} must both become "<ctrl>+<shift>+...".
+_MODIFIER_ORDER: tuple[str, ...] = ("ctrl", "alt", "shift", "cmd")
+
+# Inverse of _MODIFIER_ALIASES: every left/right/variant modifier name mapped
+# back to its canonical base ("ctrl_l" -> "ctrl"). Built from the single source
+# of truth above so the two never drift.
+_MODIFIER_BASE: dict[str, str] = {
+    variant: base for base, variants in _MODIFIER_ALIASES.items() for variant in variants
+}
+
+
+def key_to_token(key: Any) -> str | None:
+    """Map a live pynput key to its bare config token, or ``None`` if unencodable.
+
+    The chord-capture widget (#89) receives ``pynput.keyboard.Key`` /
+    ``KeyCode`` objects; config stores bare tokens. A modifier (``ctrl_l``)
+    collapses to its canonical base (``ctrl``) so left/right variants serialize
+    identically; a named key (``space``, ``f5``) uses its ``.name``; a character
+    key uses its ``.char``. A key that carries neither (e.g. a dead ``KeyCode``
+    with ``char is None``) returns ``None`` — the caller treats that as "not a
+    usable trigger" rather than encoding a token the provider can't parse.
+    """
+    name = getattr(key, "name", None)
+    if isinstance(name, str):
+        return _MODIFIER_BASE.get(name, name)
+    char = getattr(key, "char", None)
+    if isinstance(char, str):
+        return char
+    return None
+
+
+def serialize_chord(modifiers: frozenset[str], trigger: str) -> str:
+    """Serialize canonical modifier bases + a bare trigger into a config chord.
+
+    Produces the config format (``<ctrl>+<shift>+space``): each modifier wrapped
+    in ``<>`` in the fixed :data:`_MODIFIER_ORDER`, followed by the bare trigger
+    (``space`` / ``f5`` / a single char like ``d`` — never bracketed, matching
+    the ``push_to_talk`` idiom that :func:`_normalize_hotkey` expects). Ordering
+    is deterministic so a chord captured as ``⇧⌃Space`` and one captured as
+    ``⌃⇧Space`` serialize to the identical string. Unknown modifier names (not
+    in the canonical order) are appended after the known ones, sorted, so nothing
+    is silently dropped.
+    """
+    known = [m for m in _MODIFIER_ORDER if m in modifiers]
+    extra = sorted(modifiers - set(_MODIFIER_ORDER))
+    parts = [f"<{m}>" for m in (*known, *extra)]
+    parts.append(trigger)
+    return "+".join(parts)
 
 
 class _ChordSuppressor:
@@ -282,13 +377,17 @@ class PynputHotkeyProvider:
         self._ptt_key = select_push_to_talk(config)
         # The non-modifier trigger key whose release ends a hold (issue #10).
         self._ptt_trigger = _trigger_token(self._ptt_key)
+        # Stable virtual keycode for the trigger, so a modifier-mangled letter
+        # release still matches (issue #89). None for named/unknown triggers.
+        self._ptt_trigger_vk = _trigger_vk(self._ptt_trigger)
         self._chord_keys = _chord_key_names(self._ptt_key)
+        self._chord_modifiers = _chord_modifier_names(self._ptt_key)
         self._cancel_key = config.cancel
         # Suppress the chord keys (issues #11/#12) and the cancel key (issue #13)
         # from leaking to the focused app while the chord is engaged.
         self._suppressor = _ChordSuppressor(
             self._chord_keys,
-            _chord_modifier_names(self._ptt_key),
+            self._chord_modifiers,
             _chord_key_names(self._cancel_key),
         )
         self._on_press_cb: Callable[[], None] = lambda: None
@@ -298,6 +397,12 @@ class PynputHotkeyProvider:
         self._lock = threading.Lock()
         self._listener: Any = None
         self._cancel_listener: Any = None
+        # The HotKey object the live listener callbacks feed. Held on self (not a
+        # start()-time local) so set_push_to_talk can swap the matched chord in
+        # place WITHOUT reconstructing the Listener — reconstructing it would
+        # re-enter pynput's keycode_context / Carbon TIS init, which crashes on a
+        # second call on macOS (issue #89). None until start().
+        self._ptt_hotkey: Any = None
 
     # ------------------------------------------------------------------
     # HotkeyProvider interface
@@ -324,25 +429,31 @@ class PynputHotkeyProvider:
 
         try:
             ptt_normalized = _normalize_hotkey(self._ptt_key)
-            ptt_hotkey = keyboard.HotKey(
+            self._ptt_hotkey = keyboard.HotKey(
                 keyboard.HotKey.parse(ptt_normalized),
                 self._on_ptt_press,
             )
 
             # keyboard.Listener fires on every key event; we feed canonical
-            # key objects into the HotKey so it can track modifier state.
+            # key objects into the HotKey so it can track modifier state. The
+            # closures read self._ptt_hotkey / self._ptt_trigger off self (NOT a
+            # captured local) so set_push_to_talk can swap the chord live without
+            # rebuilding this listener (issue #89).
             def _on_key_press(key: Any) -> None:
                 with contextlib.suppress(Exception):
-                    ptt_hotkey.press(listener.canonical(key))
+                    self._ptt_hotkey.press(listener.canonical(key))
 
             def _on_key_release(key: Any) -> None:
                 with contextlib.suppress(Exception):
-                    ptt_hotkey.release(listener.canonical(key))
+                    self._ptt_hotkey.release(listener.canonical(key))
                 # Only releasing the trigger key ends a hold. Releasing a
                 # modifier (or any other key) while the chord is held must NOT
                 # stop the recording — otherwise multi-key chords stop almost
                 # immediately after starting and capture no audio (issue #10).
-                if not _released_key_matches(key, self._ptt_trigger):
+                # The RAW key (not the canonical one) is passed: it retains .vk,
+                # the modifier-stable identity used to match a Ctrl-mangled letter
+                # release (issue #89); canonical() would strip vk.
+                if not _released_key_matches(key, self._ptt_trigger, self._ptt_trigger_vk):
                     return
                 self._on_ptt_release()
 
@@ -383,6 +494,52 @@ class PynputHotkeyProvider:
                 with contextlib.suppress(Exception):
                     listener.stop()
 
+    def set_push_to_talk(self, new_chord: str) -> None:
+        """Swap the push-to-talk chord live, WITHOUT rebuilding the listener.
+
+        The running ``keyboard.Listener`` already holds an open
+        ``keycode_context`` (Carbon Text-Input-Source) on its own thread; building
+        a fresh listener re-enters that init and crashes on macOS (a second call
+        to ``islGetInputSourceListWithAdditions`` aborts / trips a main-queue
+        assertion — issue #89). So this rebuilds only the pure-Python, non-TIS
+        state the live callbacks read off ``self`` — the matched ``HotKey``, the
+        trigger token, the chord/suppressor sets — and never touches
+        ``self._listener`` or ``self._cancel_listener``.
+
+        The new chord is parsed and validated **before** any state is swapped
+        (``keyboard.HotKey.parse`` is pure — no TIS), so an unparseable chord
+        raises :exc:`HotkeyError` and leaves the current chord fully intact.
+        No-op if called before :meth:`start` (no live listener to update).
+        """
+        try:
+            from pynput import keyboard
+        except (ImportError, OSError) as exc:
+            raise HotkeyError(f"pynput is not available: {exc}") from exc
+
+        normalized = _normalize_hotkey(new_chord)
+        try:
+            # Pure parse — validates the chord without touching Carbon/TIS.
+            parsed = keyboard.HotKey.parse(normalized)
+            new_hotkey = keyboard.HotKey(parsed, self._on_ptt_press)
+        except Exception as exc:  # noqa: BLE001
+            raise HotkeyError(f"invalid hotkey {new_chord!r}: {exc}") from exc
+
+        with self._lock:
+            self._ptt_key = new_chord
+            self._ptt_trigger = _trigger_token(new_chord)
+            self._ptt_trigger_vk = _trigger_vk(self._ptt_trigger)
+            self._chord_keys = _chord_key_names(new_chord)
+            self._chord_modifiers = _chord_modifier_names(new_chord)
+            self._suppressor = _ChordSuppressor(
+                self._chord_keys,
+                self._chord_modifiers,
+                _chord_key_names(self._cancel_key),
+            )
+            self._ptt_hotkey = new_hotkey
+            # Any in-flight hold is abandoned by the swap (the new HotKey starts
+            # with empty state); clear _pressed so the next press fires cleanly.
+            self._pressed = False
+
     def _make_darwin_intercept(self) -> Callable[[Any, Any], Any]:
         """Build a macOS ``darwin_intercept`` that hides only the PTT chord.
 
@@ -392,16 +549,17 @@ class PynputHotkeyProvider:
         (issues #11, #12). Any error resolves to passing the event through — we
         never risk swallowing the user's whole keyboard.
         """
-        suppressor = self._suppressor
-        chord_modifiers = _chord_modifier_names(self._ptt_key)
 
         def _intercept(event_type: Any, event: Any) -> Any:
+            # Read suppressor + chord modifiers off self each event so a live
+            # chord swap (set_push_to_talk) takes effect without rebuilding the
+            # listener / re-entering keycode_context (issue #89).
             try:
                 identity = _darwin_event_identity(event)
-                modifiers_held = _darwin_chord_modifiers_held(event, chord_modifiers)
+                modifiers_held = _darwin_chord_modifiers_held(event, self._chord_modifiers)
             except Exception:  # noqa: BLE001 - never let interception raise
                 return event
-            if suppressor.should_suppress(identity, modifiers_held=modifiers_held):
+            if self._suppressor.should_suppress(identity, modifiers_held=modifiers_held):
                 return None
             return event
 

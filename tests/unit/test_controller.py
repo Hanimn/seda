@@ -32,6 +32,9 @@ class FakeHotkeyProvider:
         self.on_release: Callable[[], None] = lambda: None
         self.on_cancel: Callable[[], None] = lambda: None
         self.stopped = False
+        self.start_count = 0
+        self.chord: str | None = None
+        self.set_calls: list[str] = []
 
     def start(
         self,
@@ -42,9 +45,17 @@ class FakeHotkeyProvider:
         self.on_press = on_press
         self.on_release = on_release
         self.on_cancel = on_cancel
+        self.start_count += 1
+        # A restart after a stop clears the stopped flag (models a live listener).
+        self.stopped = False
 
     def stop(self) -> None:
         self.stopped = True
+
+    def set_push_to_talk(self, new_chord: str) -> None:
+        # In-place chord swap (strategy B, #89). Never stops/rebuilds.
+        self.set_calls.append(new_chord)
+        self.chord = new_chord
 
 
 def _make_controller(
@@ -80,6 +91,7 @@ class _RecordingInserter:
     def __init__(self) -> None:
         self.inserted: list[str] = []
         self.copy_only_calls: list[bool] = []
+        self.warmed = 0
 
     def insert(self, text: str, *, copy_only: bool = False) -> object:
         from seda.input.paste import InsertionResult
@@ -87,6 +99,9 @@ class _RecordingInserter:
         self.inserted.append(text)
         self.copy_only_calls.append(copy_only)
         return InsertionResult(copied=True, pasted=not copy_only, restored=True)
+
+    def warm(self) -> None:
+        self.warmed += 1
 
 
 class _FakeRecorder:
@@ -724,3 +739,123 @@ class TestNotifierInjection:
         finally:
             ctrl.shutdown()
             t.join(timeout=3.0)
+
+
+# ---------------------------------------------------------------------------
+# reconfigure_hotkeys — live listener re-registration (#89)
+# ---------------------------------------------------------------------------
+
+
+class TestReconfigureHotkeys:
+    """AppController.reconfigure_hotkeys swaps the PTT chord IN PLACE on the running
+    provider (strategy B, #89) — it never stops or rebuilds the listener (doing so
+    re-enters Carbon TIS and crashes on macOS)."""
+
+    def test_swaps_chord_in_place_on_the_running_provider(self) -> None:
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()  # STARTING -> IDLE, starts the provider once
+        assert isinstance(provider, FakeHotkeyProvider)
+        assert provider.start_count == 1
+
+        new_cfg = Config()
+        new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
+        assert ctrl.reconfigure_hotkeys(new_cfg) is True
+
+        # In place: same provider object, chord swapped via set_push_to_talk,
+        # listener NEVER stopped or restarted.
+        assert ctrl._hotkeys is provider
+        assert provider.set_calls == ["<ctrl>+<alt>+m"]
+        assert provider.stopped is False
+        assert provider.start_count == 1, "the listener must NOT be restarted"
+
+    def test_rebinds_config_on_success(self) -> None:
+        ctrl, _, _ = _make_controller()
+        ctrl.start()
+        new_cfg = Config()
+        new_cfg.hotkeys.push_to_talk = "<cmd>+<shift>+d"
+        assert ctrl.reconfigure_hotkeys(new_cfg) is True
+        assert ctrl._config is new_cfg
+
+    def test_no_swap_while_recording(self) -> None:
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()
+        ctrl._state_machine.transition(AppState.RECORDING)
+        new_cfg = Config()
+        new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
+        # Returns False (skipped) so the caller won't persist the unapplied chord.
+        assert ctrl.reconfigure_hotkeys(new_cfg) is False
+        assert provider.set_calls == []
+        assert ctrl._config is not new_cfg
+
+    def test_no_swap_while_stopping(self) -> None:
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()
+        ctrl._state_machine.transition(AppState.STOPPING)
+        new_cfg = Config()
+        new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
+        assert ctrl.reconfigure_hotkeys(new_cfg) is False
+        assert provider.set_calls == []
+        assert ctrl._config is not new_cfg
+
+    def test_invalid_chord_propagates_and_leaves_config_unchanged(self) -> None:
+        from seda.errors import HotkeyError
+
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()
+
+        def _raise(_chord: str) -> None:
+            raise HotkeyError("bad chord")
+
+        provider.set_push_to_talk = _raise  # type: ignore[method-assign, assignment]
+        new_cfg = Config()
+        new_cfg.hotkeys.push_to_talk = "<ctrl>+<alt>+m"
+        with pytest.raises(HotkeyError):
+            ctrl.reconfigure_hotkeys(new_cfg)
+        # set_push_to_talk validates before mutating, so the live chord is intact;
+        # config is NOT rebound. The listener was never stopped.
+        assert ctrl._hotkeys is provider
+        assert provider.stopped is False
+        assert ctrl._config is not new_cfg
+
+
+class TestHotkeyCaptureGuard:
+    """While capturing a new chord, the hotkey callbacks must be neutralized so
+    the capture keystrokes (seen by the global listener too) can't drive a phantom
+    dictation cycle that wedges the state machine (#89)."""
+
+    def test_on_press_is_ignored_while_capturing(self) -> None:
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()  # IDLE
+        ctrl.begin_hotkey_capture()
+
+        # A press arriving from the global listener during capture must NOT start
+        # recording — state stays IDLE.
+        provider.on_press()
+        assert ctrl._state_machine.state is AppState.IDLE
+
+        ctrl.end_hotkey_capture()
+        # Once capture ends, a press records normally again.
+        provider.on_press()
+        assert ctrl._state_machine.state is AppState.RECORDING
+
+    def test_release_and_cancel_ignored_while_capturing(self) -> None:
+        ctrl, provider, _ = _make_controller()
+        ctrl.start()
+        ctrl.begin_hotkey_capture()
+        # Neither release nor cancel should move the state machine while capturing.
+        provider.on_release()
+        provider.on_cancel()
+        assert ctrl._state_machine.state is AppState.IDLE
+
+
+class TestWarmInserter:
+    """warm_inserter() pre-builds the paste backend on the caller thread (#89)."""
+
+    def test_warm_inserter_delegates_to_inserter(self) -> None:
+        ctrl, _, _ = _make_controller()
+        # _make_controller injects a _RecordingInserter.
+        inserter = ctrl._inserter
+        assert isinstance(inserter, _RecordingInserter)
+        assert inserter.warmed == 0
+        ctrl.warm_inserter()
+        assert inserter.warmed == 1

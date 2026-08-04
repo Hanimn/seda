@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from seda.audio.recorder import RecorderConfig, SounddeviceRecorder
 from seda.cleanup.base import CleanupCounters
-from seda.config import Config
+from seda.config import Config, select_push_to_talk
 from seda.errors import (
     CleanupError,
     InvalidTransitionError,
@@ -122,6 +122,18 @@ class AppController:
         else:
             self._hotkeys = hotkey_provider
 
+        # Guards the hotkey provider's lifecycle so a live re-registration
+        # (reconfigure_hotkeys, #89) can't race the start()/shutdown() calls or
+        # an in-flight listener callback. Nothing else touches the provider
+        # under contention, so a single lock is sufficient.
+        self._hotkeys_lock = threading.Lock()
+        # While True, the hotkey callbacks are neutralized so the GUI's
+        # chord-capture keystrokes (seen by the global listener as well as the
+        # settings window's NSEvent monitor) cannot drive a phantom dictation
+        # cycle that would wedge the state machine (#89). Set via
+        # begin_hotkey_capture / end_hotkey_capture.
+        self._capturing = False
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -135,6 +147,17 @@ class AppController:
         the controller's internals.
         """
         return self._recorder.latest_level
+
+    def warm_inserter(self) -> None:
+        """Pre-build the text inserter's platform machinery on the caller's thread.
+
+        A GUI host (ADR-0001) calls this on the MAIN thread at startup so the
+        paste backend's macOS Carbon Text-Input-Source init happens there rather
+        than lazily on the worker thread at first paste — which crashes (SIGTRAP)
+        because that Carbon API asserts the main queue (#89). Best-effort; keeps
+        ``_inserter`` encapsulated.
+        """
+        self._inserter.warm()
 
     def start(self) -> None:
         """Load the model and start hotkey listening — the non-blocking setup.
@@ -157,11 +180,12 @@ class AppController:
             logger.info("shutdown raced with startup; aborting start()")
             return
 
-        self._hotkeys.start(
-            on_press=self._on_press,
-            on_release=self._on_release,
-            on_cancel=self._on_cancel,
-        )
+        with self._hotkeys_lock:
+            self._hotkeys.start(
+                on_press=self._on_press,
+                on_release=self._on_release,
+                on_cancel=self._on_cancel,
+            )
         self._notifier.notify(NotificationEvent.READY)
 
     def run(self) -> None:
@@ -196,8 +220,9 @@ class AppController:
         with contextlib.suppress(InvalidTransitionError):
             self._state_machine.transition(AppState.STOPPING)
 
-        # 1. Stop hotkeys.
-        self._hotkeys.stop()
+        # 1. Stop hotkeys (under the lock so a live reconfigure can't race).
+        with self._hotkeys_lock:
+            self._hotkeys.stop()
 
         # 2. If recording, cancel.
         with contextlib.suppress(Exception):
@@ -213,11 +238,65 @@ class AppController:
         # 6. Signal the main thread to exit.
         self._shutdown_event.set()
 
+    def begin_hotkey_capture(self) -> None:
+        """Neutralize hotkey handling while the GUI captures a new chord (#89).
+
+        The settings window's chord-capture keystrokes are seen by the global
+        listener too (an app-local ``NSEvent`` monitor cannot shield pynput's
+        global tap), so without this they would drive a phantom dictation cycle
+        and wedge the state machine. Idempotent; paired with
+        :meth:`end_hotkey_capture` (called on capture done/cancel/window-close).
+        """
+        with self._hotkeys_lock:
+            self._capturing = True
+
+    def end_hotkey_capture(self) -> None:
+        """Re-enable hotkey handling after a capture (see :meth:`begin_hotkey_capture`)."""
+        with self._hotkeys_lock:
+            self._capturing = False
+
+    def reconfigure_hotkeys(self, new_config: Config) -> bool:
+        """Change the push-to-talk chord on the running listener, live (#89).
+
+        Swaps the chord **in place** on the existing provider
+        (:meth:`HotkeyProvider.set_push_to_talk`) — it does NOT stop the listener
+        or build a new one. Reconstructing a pynput listener at runtime re-enters
+        the Carbon Text-Input-Source init and crashes on macOS (a second call to
+        ``islGetInputSourceListWithAdditions`` aborts / trips a main-queue
+        assertion). The in-place swap only touches pure-Python matched-chord state
+        the live callbacks read, so no listener thread is disturbed.
+
+        Only swaps at the ``IDLE`` resting point — never mid-recording or during
+        shutdown, where a swap could drop an in-flight cycle. Returns ``True`` if
+        the chord was applied, ``False`` if skipped because the app was not IDLE
+        (the caller must NOT persist a skipped chord — the live listener still has
+        the old one). An invalid chord raises ``HotkeyError`` (validated inside
+        ``set_push_to_talk`` before any state changes, so the live chord is left
+        intact). On success ``self._config`` is rebound to *new_config*.
+        """
+        with self._hotkeys_lock:
+            if self._state_machine.state is not AppState.IDLE:
+                logger.info(
+                    "reconfigure_hotkeys skipped: state is %s, not IDLE",
+                    self._state_machine.state,
+                )
+                return False
+
+            # Raises HotkeyError on an invalid chord, leaving the live chord
+            # unchanged; let it propagate so the GUI surfaces the failure.
+            self._hotkeys.set_push_to_talk(select_push_to_talk(new_config.hotkeys))
+            self._config = new_config
+            return True
+
     # ------------------------------------------------------------------
     # Hotkey callbacks (run on pynput listener thread)
     # ------------------------------------------------------------------
 
     def _on_press(self) -> None:
+        if self._capturing:
+            # The GUI is capturing a new chord; ignore the keystrokes it types so
+            # they can't start a phantom recording (#89).
+            return
         state = self._state_machine.state
         if state is AppState.IDLE:
             try:
@@ -242,6 +321,8 @@ class AppController:
             self._notifier.notify(NotificationEvent.BUSY)
 
     def _on_release(self) -> None:
+        if self._capturing:
+            return
         try:
             self._state_machine.transition(AppState.PROCESSING_AUDIO)
         except InvalidTransitionError:
@@ -266,6 +347,8 @@ class AppController:
         self._pending_future = self._executor.submit(self._process_audio, audio)
 
     def _on_cancel(self) -> None:
+        if self._capturing:
+            return
         state = self._state_machine.state
         # Cancel is valid from RECORDING, PROCESSING_AUDIO, and TRANSCRIBING.
         if state not in (AppState.RECORDING, AppState.PROCESSING_AUDIO, AppState.TRANSCRIBING):
