@@ -390,16 +390,26 @@ def gui(
         _err(f"notice: {_notice}")
 
     import seda.gui.host as host  # lazy — AppKit only touched inside the loop
-    from seda.notifications import HudMode, OverlayNotifier
+    from seda.notifications import (
+        HudMode,
+        NotificationEvent,
+        OverlayNotifier,
+        StatusPhaseNotifier,
+    )
 
     # The status item's apply sink only exists once the item is built (inside the
     # host loop). A mutable holder lets the composed set_mode reach it; a mode that
     # arrives before the item exists is a harmless no-op that self-heals on the next
     # event (mirrors the HUD's one-shot show latch).
     status: dict[str, Callable[[HudMode], None]] = {"apply": lambda _m: None}
+    # The fine phase sink (menu-bar busy-phase labels) is likewise late-bound.
+    phase: dict[str, Callable[[NotificationEvent], None]] = {"apply": lambda _e: None}
 
     def _register_status(apply: Callable[[HudMode], None]) -> None:
         status["apply"] = apply
+
+    def _register_phase(apply: Callable[[NotificationEvent], None]) -> None:
+        phase["apply"] = apply
 
     def _on_hotkey_captured(chord: str) -> str | None:
         """Persist a newly captured push-to-talk chord and live-apply it (#89).
@@ -464,12 +474,22 @@ def gui(
                 dispatch_main=overlay.dispatch_main,
             )
         )
+        # A second sink for the menu-bar item's finer busy-phase labels, driven by
+        # the raw event stream (not HudMode) and marshalled onto the same main
+        # thread. The status item's apply_phase is late-bound via `phase["apply"]`.
+        notifier.add(
+            StatusPhaseNotifier(
+                apply=lambda event: phase["apply"](event),
+                dispatch_main=overlay.dispatch_main,
+            )
+        )
 
     hosted = host.run_with_menu_bar(
         controller,
         register_overlay=_register_overlay,
         register_status=_register_status,
         on_hotkey_captured=_on_hotkey_captured,
+        register_phase=_register_phase,
     )
     if not hosted:
         # macOS but AppKit genuinely failed to build (fail-open inside run_hosted).

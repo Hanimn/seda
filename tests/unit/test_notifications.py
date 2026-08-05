@@ -16,10 +16,13 @@ from seda.notifications import (
     HudMode,
     NotificationEvent,
     OverlayNotifier,
+    StatusPhaseNotifier,
     hud_idle_shimmer,
     hud_phase_seconds,
     hud_redraw_hz,
     status_label,
+    status_phase_label,
+    status_phase_symbol,
     status_symbol,
 )
 
@@ -409,3 +412,95 @@ def test_composed_set_mode_feeds_overlay_and_status() -> None:
         HudMode.IDLE,
     ]
     assert status_modes == overlay_modes, "status surface sees the identical mode stream"
+
+
+class TestStatusPhaseLabels:
+    """The menu-bar phase surface names the busy span finer than HudMode (#87)."""
+
+    def test_busy_phases_have_distinct_labels(self) -> None:
+        # The whole point: the long, opaque busy span is split into named phases.
+        assert status_phase_label(NotificationEvent.TRANSCRIBING) == "Transcribing…"
+        assert status_phase_label(NotificationEvent.CLEANING) == "Cleaning up…"
+        assert status_phase_label(NotificationEvent.PASTING) == "Inserting…"
+        assert status_phase_label(NotificationEvent.BUSY) == "Working…"
+
+    def test_settled_states_map_to_idle(self) -> None:
+        # Terminals collapse to a calm resting label, not a stale busy phase.
+        assert status_phase_label(NotificationEvent.READY) == "Idle"
+        assert status_phase_label(NotificationEvent.SUCCESS) == "Idle"
+        assert status_phase_label(NotificationEvent.CANCELLED) == "Idle"
+
+    def test_busy_phases_share_the_busy_glyph(self) -> None:
+        # The glyph stays visually stable across the busy span while the label
+        # advances, so the menu bar doesn't flicker between symbols.
+        busy = (
+            NotificationEvent.BUSY,
+            NotificationEvent.TRANSCRIBING,
+            NotificationEvent.CLEANING,
+            NotificationEvent.PASTING,
+        )
+        assert {status_phase_symbol(e) for e in busy} == {"hourglass"}
+
+    def test_every_shipped_event_maps(self) -> None:
+        # Every current NotificationEvent maps to a phase label, so the None
+        # branch below is a forward-guard, not reachable from a real event today.
+        assert all(status_phase_label(e) is not None for e in NotificationEvent), (
+            "every shipped event should have a phase label"
+        )
+
+    def test_unmapped_value_returns_none(self) -> None:
+        # The None-means-skip contract: a value not in the table (e.g. an event
+        # added later without a mapping) yields None so the caller leaves the
+        # menu-bar label unchanged rather than blanking it. Exercised via .get()'s
+        # miss path with a sentinel string.
+        assert status_phase_label("not-an-event") is None  # type: ignore[arg-type]
+        assert status_phase_symbol("not-an-event") is None  # type: ignore[arg-type]
+
+
+class TestStatusPhaseNotifier:
+    """StatusPhaseNotifier forwards mapped phases and drops unmapped events (#87)."""
+
+    def test_mapped_event_dispatched_on_main(self) -> None:
+        seen: list[NotificationEvent] = []
+        dispatched: list[bool] = []
+
+        def _dispatch(fn: object) -> None:
+            dispatched.append(True)
+            fn()  # type: ignore[operator]
+
+        notifier = StatusPhaseNotifier(apply=seen.append, dispatch_main=_dispatch)
+        notifier.notify(NotificationEvent.CLEANING)
+
+        assert seen == [NotificationEvent.CLEANING]
+        assert dispatched == [True], "phase update marshalled through dispatch_main"
+
+    def test_unmapped_event_is_dropped_without_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[NotificationEvent] = []
+        dispatched: list[bool] = []
+
+        def _dispatch(fn: object) -> None:
+            dispatched.append(True)
+            fn()  # type: ignore[operator]
+
+        # Force the label lookup to miss so we exercise the drop path without
+        # needing an unmapped enum member (every shipped event maps today).
+        monkeypatch.setattr(
+            "seda.notifications.status_phase_label", lambda _event: None
+        )
+        notifier = StatusPhaseNotifier(apply=seen.append, dispatch_main=_dispatch)
+        notifier.notify(NotificationEvent.CLEANING)
+
+        assert seen == [], "an event with no label must not reach apply"
+        assert dispatched == [], "and must not be dispatched to the main thread"
+
+    def test_apply_failure_is_swallowed(self) -> None:
+        # Fail-open: a broken status item must never harm dictation. A raising
+        # apply is caught, not propagated.
+        def _boom(_event: NotificationEvent) -> None:
+            raise RuntimeError("status item exploded")
+
+        notifier = StatusPhaseNotifier(apply=_boom, dispatch_main=lambda fn: fn())
+        # Should not raise.
+        notifier.notify(NotificationEvent.TRANSCRIBING)

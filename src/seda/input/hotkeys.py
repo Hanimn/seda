@@ -249,6 +249,58 @@ def serialize_chord(modifiers: frozenset[str], trigger: str) -> str:
     return "+".join(parts)
 
 
+# Human-facing chord glyphs for macOS surfaces (#87/#89). The config format
+# (``<ctrl>+<shift>+space``) is precise but reads as jargon in a menu; on macOS,
+# users recognize the standard Cocoa symbols. Modifiers render as their glyph
+# and in the platform's canonical order (⌃⌥⇧⌘); the trigger is title-cased.
+_MAC_MODIFIER_GLYPHS: dict[str, str] = {
+    "ctrl": "⌃",
+    "alt": "⌥",
+    "shift": "⇧",
+    "cmd": "⌘",
+}
+# Cocoa shows modifiers as ⌃⌥⇧⌘ (control, option, shift, command) — a different
+# order from the config's canonical ctrl+alt+shift+cmd, which already matches.
+_MAC_MODIFIER_DISPLAY_ORDER: tuple[str, ...] = ("ctrl", "alt", "shift", "cmd")
+# A few trigger tokens have conventional key-cap names rather than a title-case.
+_TRIGGER_DISPLAY_NAMES: dict[str, str] = {
+    "space": "Space",
+    "enter": "↩",
+    "tab": "⇥",
+    "esc": "⎋",
+    "up": "↑",
+    "down": "↓",
+    "left": "←",
+    "right": "→",
+}
+
+
+def format_chord_display(hotkey: str) -> str:
+    """Render a config chord as macOS key-cap glyphs (``⌃⇧Space``).
+
+    Pure/AppKit-agnostic so it is unit-testable and usable from any surface.
+    Falls back to the raw token for anything it does not recognize, so an exotic
+    chord is shown verbatim rather than mangled. An empty string maps to a dash
+    so a menu never shows a blank shortcut.
+    """
+    tokens = [t.strip().strip("<>") for t in hotkey.split("+") if t.strip()]
+    if not tokens:
+        return "—"
+    mods = [t for t in tokens if t in _MODIFIER_BASE or t in _MAC_MODIFIER_GLYPHS]
+    trigger_tokens = [
+        t for t in tokens if t not in _MODIFIER_BASE and t not in _MAC_MODIFIER_GLYPHS
+    ]
+    bases = {_MODIFIER_BASE.get(m, m) for m in mods}
+    glyphs = [
+        _MAC_MODIFIER_GLYPHS[m] for m in _MAC_MODIFIER_DISPLAY_ORDER if m in bases
+    ]
+    parts: list[str] = list(glyphs)
+    for trig in trigger_tokens:
+        default = trig.upper() if len(trig) == 1 else trig.title()
+        parts.append(_TRIGGER_DISPLAY_NAMES.get(trig, default))
+    return "".join(parts) if parts else "—"
+
+
 class _ChordSuppressor:
     """Decides whether a key event should be hidden from other applications.
 

@@ -763,7 +763,12 @@ def test_gui_hosts_on_macos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     result = runner.invoke(app, ["gui", "--config", str(_gui_config(tmp_path))])
     assert result.exit_code == 0
     assert "controller" in seen
-    assert seen["kwargs"] == {"register_overlay", "register_status", "on_hotkey_captured"}
+    assert seen["kwargs"] == {
+        "register_overlay",
+        "register_status",
+        "on_hotkey_captured",
+        "register_phase",
+    }
 
 
 def test_gui_errors_when_host_declines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

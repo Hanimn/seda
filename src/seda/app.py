@@ -442,6 +442,10 @@ class AppController:
         except InvalidTransitionError:
             return
 
+        # Menu-bar phase cue (#87 follow-up): name the insert step. Coarse HUD is
+        # unchanged (still BUSY); only the status-item label advances.
+        self._notifier.notify(NotificationEvent.PASTING)
+
         t0 = time.monotonic()
         insertion = self._inserter.insert(final_text, copy_only=self._copy_only)
         t_paste = time.monotonic() - t0
@@ -486,6 +490,9 @@ class AppController:
             self._state_machine.transition(AppState.CLEANING)
         except InvalidTransitionError:
             return pipeline.text
+
+        # Menu-bar phase cue (#87 follow-up): name the cleanup step. HUD stays BUSY.
+        self._notifier.notify(NotificationEvent.CLEANING)
 
         from seda.cleanup.validation import ValidationReason, validate_cleanup
 
