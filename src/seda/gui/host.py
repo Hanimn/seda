@@ -441,9 +441,7 @@ def run_with_menu_bar(
     build_fn = build if build is not None else build_overlay
 
     def _loop(c: AppController, o: Overlay, reg: Callable[[Overlay], None] | None) -> None:
-        _run_appkit_menu_bar_loop(
-            c, o, reg, register_status, on_hotkey_captured, register_phase
-        )
+        _run_appkit_menu_bar_loop(c, o, reg, register_status, on_hotkey_captured, register_phase)
 
     return run_hosted(
         controller,
@@ -1262,9 +1260,7 @@ def _build_status_item(
 
     menu = NSMenu.alloc().init()
     # A disabled, non-selectable header row showing the live chord.
-    header_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-        "Push-to-talk:  —", "", ""
-    )
+    header_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Push-to-talk:  —", "", "")
     header_item.setEnabled_(False)
     menu.addItem_(header_item)
     menu.addItem_(NSMenuItem.separatorItem())

@@ -291,9 +291,7 @@ def format_chord_display(hotkey: str) -> str:
         t for t in tokens if t not in _MODIFIER_BASE and t not in _MAC_MODIFIER_GLYPHS
     ]
     bases = {_MODIFIER_BASE.get(m, m) for m in mods}
-    glyphs = [
-        _MAC_MODIFIER_GLYPHS[m] for m in _MAC_MODIFIER_DISPLAY_ORDER if m in bases
-    ]
+    glyphs = [_MAC_MODIFIER_GLYPHS[m] for m in _MAC_MODIFIER_DISPLAY_ORDER if m in bases]
     parts: list[str] = list(glyphs)
     for trig in trigger_tokens:
         default = trig.upper() if len(trig) == 1 else trig.title()

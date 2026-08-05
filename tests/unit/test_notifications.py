@@ -486,9 +486,7 @@ class TestStatusPhaseNotifier:
 
         # Force the label lookup to miss so we exercise the drop path without
         # needing an unmapped enum member (every shipped event maps today).
-        monkeypatch.setattr(
-            "seda.notifications.status_phase_label", lambda _event: None
-        )
+        monkeypatch.setattr("seda.notifications.status_phase_label", lambda _event: None)
         notifier = StatusPhaseNotifier(apply=seen.append, dispatch_main=_dispatch)
         notifier.notify(NotificationEvent.CLEANING)
 
