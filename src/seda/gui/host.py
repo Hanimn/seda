@@ -416,6 +416,7 @@ def run_with_menu_bar(
     register_overlay: Callable[[Overlay], None] | None = None,
     register_status: Callable[[Callable[[HudMode], None]], None] | None = None,
     on_hotkey_captured: Callable[[str], str | None] | None = None,
+    register_phase: Callable[[Callable[[Any], None]], None] | None = None,
     platform: str | None = None,
 ) -> bool:
     """Run *controller* under the macOS menu-bar app (status item + Quit) — issue #87.
@@ -440,7 +441,7 @@ def run_with_menu_bar(
     build_fn = build if build is not None else build_overlay
 
     def _loop(c: AppController, o: Overlay, reg: Callable[[Overlay], None] | None) -> None:
-        _run_appkit_menu_bar_loop(c, o, reg, register_status, on_hotkey_captured)
+        _run_appkit_menu_bar_loop(c, o, reg, register_status, on_hotkey_captured, register_phase)
 
     return run_hosted(
         controller,
@@ -458,6 +459,7 @@ def _run_appkit_menu_bar_loop(
     register_overlay: Callable[[Overlay], None] | None,
     register_status: Callable[[Callable[[HudMode], None]], None] | None,
     on_hotkey_captured: Callable[[str], str | None] | None = None,
+    register_phase: Callable[[Callable[[Any], None]], None] | None = None,
 ) -> None:
     """macOS ``run_loop`` body for :func:`run_with_menu_bar` (past the fail-open boundary).
 
@@ -481,6 +483,7 @@ def _run_appkit_menu_bar_loop(
             overlay.dispatch_main,
             controller.begin_hotkey_capture,
             controller.end_hotkey_capture,
+            register_phase,
         )
 
     _run_appkit_host(controller, app, overlay, register_overlay, build_extra=_build_extra)
@@ -632,13 +635,15 @@ def _build_settings_controller(
         NSEventModifierFlagControl,
         NSEventModifierFlagOption,
         NSEventModifierFlagShift,
+        NSFont,
         NSMakeRect,
         NSObject,
+        NSPopUpButton,
         NSSwitchButton,
         NSTextField,
-        NSTitledWindowMask,
         NSWindow,
         NSWindowStyleMaskClosable,
+        NSWindowStyleMaskTitled,
     )
 
     from seda.config import (
@@ -647,7 +652,23 @@ def _build_settings_controller(
         save_config,
         select_push_to_talk,
     )
-    from seda.input.hotkeys import serialize_chord
+    from seda.input.hotkeys import format_chord_display, serialize_chord
+
+    # Curated faster-whisper model list for the popup (#88 rebuild). Free-text was
+    # error-prone (a typo only surfaced at restart); a popup prevents that for the
+    # common case while "Other…" keeps an escape hatch for a custom / local model.
+    _KNOWN_MODELS = (
+        "tiny.en",
+        "tiny",
+        "base.en",
+        "base",
+        "small.en",
+        "small",
+        "medium.en",
+        "medium",
+        "large-v3",
+    )
+    _MODEL_OTHER = "Other…"
 
     # NSEvent.modifierFlags is a bitmask; map each flag to the canonical config
     # modifier token serialize_chord expects. Order here is irrelevant —
@@ -662,12 +683,13 @@ def _build_settings_controller(
     def _modifiers_from_flags(flags: int) -> frozenset[str]:
         return frozenset(tok for flag, tok in _MODIFIER_FLAGS if flags & flag)
 
-    # Each row: (dotted path, label, kind). "check" -> NSButton switch; "text" -> field.
-    _FIELDS = [
-        ("cleanup.enabled", "LLM cleanup", "check"),
-        ("app.notify_on_ready", "Notify on ready", "check"),
-        ("app.log_transcripts", "Log transcripts (privacy)", "check"),
-        ("transcription.model", "Model", "text"),
+    # Checkbox rows only (dotted path, label). The model is handled separately as
+    # a popup below; copy-only is its own toggle. Grouped under section headers in
+    # _build_window rather than laid out as one flat stack (#88 rebuild).
+    _CHECK_FIELDS = [
+        ("cleanup.enabled", "Clean up transcript with a local LLM"),
+        ("app.notify_on_ready", "Notify when ready to dictate"),
+        ("app.log_transcripts", "Log transcripts to disk (off for privacy)"),
     ]
 
     class _SettingsController(NSObject):  # type: ignore[misc]
@@ -687,6 +709,9 @@ def _build_settings_controller(
             self._record_button: Any = None
             self._capture_monitor: Any = None
             self._hotkey_chord: str = ""
+            # Model popup + its "Other…" free-text escape hatch (#88 rebuild).
+            self._model_popup: Any = None
+            self._model_other: Any = None
             return self
 
         def open_(self, _sender: Any) -> None:  # noqa: N802 -- ObjC selector open:
@@ -698,26 +723,38 @@ def _build_settings_controller(
             self._window.makeKeyAndOrderFront_(None)
 
         def _build_window(self) -> None:
-            style = NSTitledWindowMask | NSWindowStyleMaskClosable
+            # NSWindowStyleMaskTitled is the non-deprecated spelling of the old
+            # NSTitledWindowMask (#88 rebuild). Grown to 380h to fit the two
+            # section headers + the model popup and its "Other…" field.
+            style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
             win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-                NSMakeRect(0, 0, 360, 240), style, NSBackingStoreBuffered, False
+                NSMakeRect(0, 0, 380, 380), style, NSBackingStoreBuffered, False
             )
             win.setTitle_("Seda Settings")
             win.setReleasedWhenClosed_(False)  # reopen-safe: closing hides, not frees
             content = win.contentView()
-            y = 200
+            y = 344
 
-            def _label(text: str, yy: int) -> None:
-                lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(16, yy, 150, 20))
+            def _label(text: str, yy: int, *, width: int = 150) -> Any:
+                lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(16, yy, width, 20))
                 lbl.setStringValue_(text)
                 lbl.setEditable_(False)
                 lbl.setBordered_(False)
                 lbl.setDrawsBackground_(False)
                 content.addSubview_(lbl)
+                return lbl
+
+            def _section(text: str, yy: int) -> None:
+                # A bold section header. NSFont.boldSystemFontOfSize_ visually
+                # separates the grouped rows below it (#88 rebuild) without a box.
+                hdr = _label(text, yy, width=340)
+                with contextlib.suppress(Exception):
+                    hdr.setFont_(NSFont.boldSystemFontOfSize_(13))
 
             # Push-to-talk: a current-chord label + a Record button that captures
-            # a new chord (#89). The label shows the live chord; Record arms a
-            # window-local key monitor (see _record_hotkey_ / _capture_event).
+            # a new chord (#89). The label shows the live chord as macOS key-cap
+            # glyphs (⌃⇧Space); Record arms a window-local key monitor (see
+            # _record_hotkey_ / _capture_event).
             _label("Push-to-talk", y)
             hk = NSTextField.alloc().initWithFrame_(NSMakeRect(170, y, 110, 20))
             hk.setEditable_(False)
@@ -739,32 +776,51 @@ def _build_settings_controller(
             record.setEnabled_(on_hotkey_captured is not None)
             content.addSubview_(record)
             self._record_button = record
-            y -= 32
+            y -= 44
 
-            for dotted, label, kind in _FIELDS:
-                if kind == "check":
-                    btn = NSButton.alloc().initWithFrame_(NSMakeRect(16, y, 320, 20))
-                    btn.setButtonType_(NSSwitchButton)
-                    btn.setTitle_(label)
-                    content.addSubview_(btn)
-                    self._controls[dotted] = btn
-                    y -= 28
-                elif kind == "text":
-                    _label(label, y)
-                    fld = NSTextField.alloc().initWithFrame_(NSMakeRect(170, y, 170, 22))
-                    content.addSubview_(fld)
-                    self._controls[dotted] = fld
-                    y -= 32
+            # ── Transcription ────────────────────────────────────────────────
+            # Model as a popup of curated faster-whisper names + an "Other…" item
+            # that reveals a free-text field for a custom / local model (#88
+            # rebuild). The popup's action (modelChanged:) toggles the field.
+            _section("Transcription", y)
+            y -= 28
+            _label("Model", y)
+            popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                NSMakeRect(170, y - 2, 194, 26), False
+            )
+            popup.addItemsWithTitles_(list(_KNOWN_MODELS))
+            popup.addItemWithTitle_(_MODEL_OTHER)
+            popup.setTarget_(self)
+            popup.setAction_("modelChanged:")
+            content.addSubview_(popup)
+            self._model_popup = popup
+            y -= 30
+            other = NSTextField.alloc().initWithFrame_(NSMakeRect(170, y, 194, 22))
+            other.setPlaceholderString_("custom model name")
+            content.addSubview_(other)
+            self._model_other = other
+            y -= 36
+
+            # ── Behavior ─────────────────────────────────────────────────────
+            _section("Behavior", y)
+            y -= 28
+            for dotted, label in _CHECK_FIELDS:
+                btn = NSButton.alloc().initWithFrame_(NSMakeRect(16, y, 348, 20))
+                btn.setButtonType_(NSSwitchButton)
+                btn.setTitle_(label)
+                content.addSubview_(btn)
+                self._controls[dotted] = btn
+                y -= 28
 
             # Copy-only maps to paste.multiline_policy == "copy_only".
-            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(16, y, 320, 20))
+            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(16, y, 348, 20))
             copy_btn.setButtonType_(NSSwitchButton)
             copy_btn.setTitle_("Copy only (never paste)")
             content.addSubview_(copy_btn)
             self._copy_only = copy_btn
             y -= 32
 
-            save = NSButton.alloc().initWithFrame_(NSMakeRect(250, 12, 90, 28))
+            save = NSButton.alloc().initWithFrame_(NSMakeRect(274, 12, 90, 28))
             save.setTitle_("Save")
             save.setTarget_(self)
             save.setAction_("save:")
@@ -802,13 +858,50 @@ def _build_settings_controller(
             # arg signature raises BadPrototypeError on an ObjC subclass.
             cfg = self._cfg
             self._hotkey_chord = select_push_to_talk(cfg.hotkeys)
-            self._controls["_hotkey"].setStringValue_(self._hotkey_chord)
+            # Show the chord as macOS key-cap glyphs (⌃⇧Space) — the same glyphs
+            # the menu header uses. The raw config chord is preserved in
+            # self._hotkey_chord for the capture path; only the label is glyphs.
+            self._controls["_hotkey"].setStringValue_(format_chord_display(self._hotkey_chord))
             self._controls["cleanup.enabled"].setState_(1 if cfg.cleanup.enabled else 0)
             self._controls["app.notify_on_ready"].setState_(1 if cfg.app.notify_on_ready else 0)
             self._controls["app.log_transcripts"].setState_(1 if cfg.app.log_transcripts else 0)
-            self._controls["transcription.model"].setStringValue_(cfg.transcription.model)
+            self._select_model(cfg.transcription.model)
             self._copy_only.setState_(1 if cfg.paste.multiline_policy == "copy_only" else 0)
             self._status.setStringValue_("")
+
+        @objc.python_method  # type: ignore[untyped-decorator]
+        def _select_model(self, model: str) -> None:
+            # Point the popup at *model*: a curated name selects that item and
+            # hides the free-text field; anything else lands on "Other…" with the
+            # value pre-filled and the field revealed. Idempotent — safe to call
+            # from _populate and from modelChanged_.
+            if model in _KNOWN_MODELS:
+                self._model_popup.selectItemWithTitle_(model)
+                self._model_other.setStringValue_("")
+                self._model_other.setHidden_(True)
+            else:
+                self._model_popup.selectItemWithTitle_(_MODEL_OTHER)
+                self._model_other.setStringValue_(model)
+                self._model_other.setHidden_(False)
+
+        @objc.python_method  # type: ignore[untyped-decorator]
+        def _current_model(self) -> str:
+            # The effective model from the popup: the selected preset, or the
+            # free-text value when "Other…" is chosen (stripped).
+            title = str(self._model_popup.titleOfSelectedItem() or "")
+            if title == _MODEL_OTHER:
+                return str(self._model_other.stringValue()).strip()
+            return title
+
+        def modelChanged_(self, _sender: Any) -> None:  # noqa: N802 -- selector modelChanged:
+            # Popup selection changed: reveal the free-text field only for
+            # "Other…", hide it otherwise. Focus the field when revealed so the
+            # user can type immediately.
+            is_other = str(self._model_popup.titleOfSelectedItem() or "") == _MODEL_OTHER
+            self._model_other.setHidden_(not is_other)
+            if is_other:
+                with contextlib.suppress(Exception):
+                    self._window.makeFirstResponder_(self._model_other)
 
         def recordHotkey_(self, _sender: Any) -> None:  # noqa: N802 -- selector recordHotkey:
             """Arm a window-local key-down monitor to capture the next chord (#89).
@@ -938,7 +1031,11 @@ def _build_settings_controller(
                 if new_val != current_val:
                     edits[path] = new_val
 
-            model = str(self._controls["transcription.model"].stringValue()).strip()
+            # Model from the popup: a preset title, or the "Other…" free-text
+            # (stripped) for a custom / local model. The empty-guard still holds
+            # — an "Other…" selection with a blank field is rejected, matching the
+            # config validator (transcription.model must be non-empty).
+            model = self._current_model()
             if not model:
                 self._status.setStringValue_("Model must not be empty.")
                 return
@@ -992,6 +1089,7 @@ def _build_status_item(
     dispatch_main: Callable[[Callable[[], None]], None] | None = None,
     on_capture_begin: Callable[[], None] | None = None,
     on_capture_end: Callable[[], None] | None = None,
+    register_phase: Callable[[Callable[[Any], None]], None] | None = None,
 ) -> Callable[[], None]:
     """Create the ``NSStatusBar`` item + menu (Quit) and wire live status — issue #87.
 
@@ -1005,8 +1103,15 @@ def _build_status_item(
     the item.
 
     *on_hotkey_captured* is threaded to the settings window's Record button (#89);
-    ``None`` leaves the button inert.
+    ``None`` leaves the button inert. *register_phase* (if given) receives an
+    ``apply_phase(NotificationEvent)`` sink that advances the menu-bar label
+    through the busy phases (Working… → Transcribing… → Cleaning up… →
+    Inserting…) — a finer signal than the coarse ``HudMode`` the HUD tracks.
     """
+    # Bound before the menu-header delegate class statement below evaluates its
+    # @objc.python_method decorators. Local import keeps the module importable on
+    # non-macOS.
+    import objc
     from AppKit import (
         NSAlert,
         NSApplication,  # noqa: F401 -- ensures AppKit is up (imported by the loop already)
@@ -1019,24 +1124,38 @@ def _build_status_item(
         NSWorkspace,
     )
 
+    from seda.notifications import status_phase_label, status_phase_symbol
+
     status_bar = NSStatusBar.systemStatusBar()
     item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
 
-    def _apply(mode: HudMode) -> None:
-        # Runs on the main thread (the composed set_mode is marshalled via the
-        # overlay's dispatch_main). Set the title always; set the glyph best-effort.
+    def _set_button(title: str, symbol: str) -> None:
+        # Shared title+glyph writer. Glyph is best-effort; a missing SF Symbol
+        # degrades to text-only rather than crashing (older macOS / typo).
         button = item.button()
         if button is None:
             return
-        button.setTitle_(status_label(mode))
+        button.setTitle_(title)
         try:
-            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-                status_symbol(mode), status_label(mode)
-            )
+            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, title)
             if image is not None:
                 button.setImage_(image)
         except Exception:  # noqa: BLE001
             logger.debug("status-item glyph update failed; text-only", exc_info=True)
+
+    def _apply(mode: HudMode) -> None:
+        # Coarse HUD-mode sink (kept for back-compat + the READY/RECORDING/IDLE
+        # transitions the HUD drives). Runs on the main thread.
+        _set_button(status_label(mode), status_symbol(mode))
+
+    def _apply_phase(event: Any) -> None:
+        # Fine phase sink (#87 follow-up): advance the label through the busy
+        # phases. Runs on the main thread (marshalled by StatusPhaseNotifier).
+        label = status_phase_label(event)
+        if label is None:
+            return  # unmapped event — leave the label as-is
+        symbol = status_phase_symbol(event) or "circle"
+        _set_button(label, symbol)
 
     # Quit target: an NSObject exposing an action that requests stop through the
     # EXISTING pump path (no new shutdown logic). Held on the item so it outlives
@@ -1113,7 +1232,43 @@ def _build_status_item(
     open_logs_target = _OpenLogsTarget.alloc().init()
     doctor_target = _DoctorTarget.alloc().init()
 
+    # A disabled header item that shows the current push-to-talk chord as macOS
+    # key-cap glyphs (#87 follow-up): the single most-needed fact — how to
+    # dictate — is now zero clicks deep, right at the top of the menu, instead of
+    # buried in Settings. Refreshed each time the menu opens (menuNeedsUpdate:)
+    # so it tracks a live rebind. Reads config off the main thread on menu-open,
+    # which is a cheap TOML read; fail-open to a neutral label.
+    class _MenuHeaderDelegate(NSObject):  # type: ignore[misc]
+        def menuNeedsUpdate_(self, menu: Any) -> None:  # noqa: N802 -- NSMenuDelegate
+            with contextlib.suppress(Exception):
+                self._refresh_header()
+
+        @objc.python_method  # type: ignore[untyped-decorator]
+        def _refresh_header(self) -> None:
+            from seda.config import load_config, select_push_to_talk
+            from seda.input.hotkeys import format_chord_display
+
+            try:
+                cfg = load_config(None)
+                chord = format_chord_display(select_push_to_talk(cfg.hotkeys))
+            except Exception:  # noqa: BLE001 -- never let a config read break the menu
+                logger.debug("menu header chord read failed", exc_info=True)
+                chord = "—"
+            self._header_item.setTitle_(f"Push-to-talk:  {chord}")
+
+    header_delegate = _MenuHeaderDelegate.alloc().init()
+
     menu = NSMenu.alloc().init()
+    # A disabled, non-selectable header row showing the live chord.
+    header_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Push-to-talk:  —", "", "")
+    header_item.setEnabled_(False)
+    menu.addItem_(header_item)
+    menu.addItem_(NSMenuItem.separatorItem())
+    header_delegate._header_item = header_item
+    menu.setDelegate_(header_delegate)
+    with contextlib.suppress(Exception):
+        header_delegate._refresh_header()  # seed before first open
+
     settings_controller = _build_settings_controller(
         on_hotkey_captured, dispatch_main, on_capture_begin, on_capture_end
     )
@@ -1142,12 +1297,23 @@ def _build_status_item(
     _apply(HudMode.IDLE)
     if register_status is not None:
         register_status(_apply)
+    # Hand the fine phase sink to cli.gui too, so the busy-phase labels advance.
+    if register_phase is not None:
+        register_phase(_apply_phase)
 
     def _teardown() -> None:
         # Keep the menu-action targets + settings controller + main-thread runner
-        # referenced until teardown so a menu action never dispatches into a freed
-        # ObjC object; drop the item from the bar.
-        _ = (quit_target, open_logs_target, doctor_target, settings_controller, runner)
+        # + the menu header delegate referenced until teardown so a menu action
+        # or a menuNeedsUpdate: never dispatches into a freed ObjC object; drop
+        # the item from the bar.
+        _ = (
+            quit_target,
+            open_logs_target,
+            doctor_target,
+            settings_controller,
+            runner,
+            header_delegate,
+        )
         status_bar.removeStatusItem_(item)
 
     return _teardown

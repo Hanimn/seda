@@ -23,6 +23,8 @@ class NotificationEvent(StrEnum):
     READY = "READY"
     RECORDING = "RECORDING"
     TRANSCRIBING = "TRANSCRIBING"
+    CLEANING = "CLEANING"
+    PASTING = "PASTING"
     CANCELLED = "CANCELLED"
     BUSY = "BUSY"
     ERROR = "ERROR"
@@ -129,6 +131,54 @@ def status_symbol(mode: HudMode) -> str:
     return _STATUS_SYMBOLS.get(mode, "circle")
 
 
+# Phase-level menu-bar surface (#87 follow-up). The HUD stays a coarse 3-mode
+# widget (IDLE/LISTENING/BUSY — ADR-0007), but the menu-bar *label* can afford
+# more granularity: the busy span (PROCESSING_AUDIO → TRANSCRIBING → CLEANING →
+# PASTING) is the longest wait and the least-informative state, so the label
+# names the live phase instead of a single "Busy". Driven by NotificationEvent
+# (which carries the phase distinction) rather than HudMode. Pure Python /
+# AppKit-agnostic so the mapping is unit-testable and importable in CI.
+_PHASE_LABELS: dict[NotificationEvent, str] = {
+    NotificationEvent.READY: "Idle",
+    NotificationEvent.RECORDING: "Listening",
+    NotificationEvent.BUSY: "Working…",
+    NotificationEvent.TRANSCRIBING: "Transcribing…",
+    NotificationEvent.CLEANING: "Cleaning up…",
+    NotificationEvent.PASTING: "Inserting…",
+    NotificationEvent.SUCCESS: "Idle",
+    NotificationEvent.CANCELLED: "Idle",
+    NotificationEvent.ERROR: "Error",
+}
+# The busy phases all share the HUD's BUSY glyph so the menu bar stays visually
+# stable while its label advances; terminals map to their settled state.
+_PHASE_SYMBOLS: dict[NotificationEvent, str] = {
+    NotificationEvent.READY: "circle",
+    NotificationEvent.RECORDING: "waveform",
+    NotificationEvent.BUSY: "hourglass",
+    NotificationEvent.TRANSCRIBING: "hourglass",
+    NotificationEvent.CLEANING: "hourglass",
+    NotificationEvent.PASTING: "hourglass",
+    NotificationEvent.SUCCESS: "circle",
+    NotificationEvent.CANCELLED: "circle",
+    NotificationEvent.ERROR: "exclamationmark.triangle",
+}
+
+
+def status_phase_label(event: NotificationEvent) -> str | None:
+    """Menu-bar label for *event*, or ``None`` if the event carries no label.
+
+    ``TRANSCRIBING``/``CLEANING``/``PASTING`` name the live busy phase so the
+    menu bar's longest wait is legible; ``None`` (e.g. an unmapped event) tells
+    the caller to leave the label unchanged rather than blanking it.
+    """
+    return _PHASE_LABELS.get(event)
+
+
+def status_phase_symbol(event: NotificationEvent) -> str | None:
+    """SF Symbol name for *event*'s menu-bar glyph, or ``None`` to leave it."""
+    return _PHASE_SYMBOLS.get(event)
+
+
 @runtime_checkable
 class Notifier(Protocol):
     """Anything that can surface a :class:`NotificationEvent` to the user.
@@ -187,6 +237,10 @@ class ConsoleNotifier:
             return "[transcribing]"
         if event is NotificationEvent.CANCELLED:
             return "[cancelled]"
+        if event is NotificationEvent.CLEANING:
+            return "[cleaning]"
+        if event is NotificationEvent.PASTING:
+            return "[inserting]"
         if event is NotificationEvent.BUSY:
             return "[busy]"
         if event is NotificationEvent.ERROR:
@@ -312,3 +366,43 @@ class OverlayNotifier:
             self._dispatch_main(_run)
         except Exception:  # noqa: BLE001
             logger.warning("overlay dispatch_main failed", exc_info=True)
+
+
+class StatusPhaseNotifier:
+    """Drives the menu-bar item's label/glyph off the raw event stream (#87).
+
+    Unlike :class:`OverlayNotifier` — which maps events onto the HUD's coarse
+    3-mode ``HudMode`` — this sink forwards the finer *phase* the menu bar can
+    afford to show (``Working…`` → ``Transcribing…`` → ``Cleaning up…`` →
+    ``Inserting…``). It calls an injected ``apply(event)`` on the main thread via
+    ``dispatch_main`` (AppKit is main-thread only, ADR-0001), and swallows any
+    failure (fail-open: a broken status item must never harm dictation).
+
+    Events with no label (``status_phase_label`` returns ``None``) are dropped so
+    the label is never blanked by an unrelated event. Registered alongside the
+    ``OverlayNotifier`` in ``cli.gui`` so both surfaces track the same stream.
+    """
+
+    def __init__(
+        self,
+        *,
+        apply: Callable[[NotificationEvent], None],
+        dispatch_main: Callable[[Callable[[], None]], None],
+    ) -> None:
+        self._apply = apply
+        self._dispatch_main = dispatch_main
+
+    def notify(self, event: NotificationEvent, **_kwargs: Any) -> None:
+        if status_phase_label(event) is None:
+            return  # no label for this event — leave the menu bar as-is
+
+        def _run() -> None:
+            try:
+                self._apply(event)
+            except Exception:  # noqa: BLE001
+                logger.warning("status-item phase update failed", exc_info=True)
+
+        try:
+            self._dispatch_main(_run)
+        except Exception:  # noqa: BLE001
+            logger.warning("status-item dispatch_main failed", exc_info=True)

@@ -14,6 +14,7 @@ from seda.config import HotkeysConfig
 from seda.input.hotkeys import (
     HotkeyProvider,
     PynputHotkeyProvider,
+    format_chord_display,
     key_to_token,
     serialize_chord,
 )
@@ -570,3 +571,39 @@ class TestReleasedKeyMatchesVk:
         # The common (unmangled) case and the string test-path both still work.
         assert _released_key_matches(_VkKey(char="m", vk=46), "m") is True
         assert _released_key_matches("space", "space") is True
+
+
+class TestFormatChordDisplay:
+    """format_chord_display renders a config chord as macOS key-cap glyphs (#87/#89)."""
+
+    def test_default_push_to_talk_chord(self) -> None:
+        # The shipped default chord renders in canonical Cocoa order ⌃⇧ + Space.
+        assert format_chord_display("<ctrl>+<shift>+space") == "⌃⇧Space"
+
+    def test_modifier_order_is_canonical_cocoa(self) -> None:
+        # Cocoa shows modifiers ⌃⌥⇧⌘ regardless of the order in the config token;
+        # a scrambled input must still render in that fixed order.
+        assert format_chord_display("<cmd>+<shift>+<alt>+<ctrl>+a") == "⌃⌥⇧⌘A"
+
+    def test_single_letter_uppercased(self) -> None:
+        assert format_chord_display("<alt>+f") == "⌥F"
+
+    def test_named_trigger_glyphs(self) -> None:
+        # A few triggers have conventional key-cap glyphs rather than a word.
+        assert format_chord_display("<ctrl>+enter") == "⌃↩"
+        assert format_chord_display("<ctrl>+tab") == "⌃⇥"
+        assert format_chord_display("<ctrl>+esc") == "⌃⎋"
+
+    def test_bare_trigger_titlecased(self) -> None:
+        # A multi-char trigger with no special glyph is title-cased.
+        assert format_chord_display("f13") == "F13"
+
+    def test_empty_maps_to_dash(self) -> None:
+        # An empty chord must never render as a blank menu line.
+        assert format_chord_display("") == "—"
+        assert format_chord_display("   ") == "—"
+
+    def test_unknown_token_passed_through(self) -> None:
+        # An exotic trigger we don't special-case is shown verbatim (title-cased),
+        # not mangled or dropped.
+        assert format_chord_display("<ctrl>+home") == "⌃Home"
