@@ -31,9 +31,16 @@ class _RecordingModel:
         return [segment], info
 
 
-def _backend(config: TranscriptionConfig, vocab: list[str] | None) -> FasterWhisperBackend:
+def _backend(
+    config: TranscriptionConfig,
+    vocab: list[str] | None,
+    *,
+    vad_filter: bool = False,
+) -> FasterWhisperBackend:
     # device="cpu" avoids the CUDA probe; a recording stub replaces the real model.
-    backend = FasterWhisperBackend(config, cuda_available=lambda: False, custom_vocabulary=vocab)
+    backend = FasterWhisperBackend(
+        config, cuda_available=lambda: False, custom_vocabulary=vocab, vad_filter=vad_filter
+    )
     backend._model = _RecordingModel()
     return backend
 
@@ -81,3 +88,53 @@ def test_factory_plumbs_custom_vocabulary_into_backend() -> None:
     backend = create_backend(config)
     assert isinstance(backend, FasterWhisperBackend)
     assert backend._custom_vocabulary == ["Ollama", "CTranslate2"]
+
+
+def test_vad_filter_passed_to_model_when_enabled() -> None:
+    backend = _backend(TranscriptionConfig(device="cpu"), [], vad_filter=True)
+    backend.transcribe(np.zeros(1600, dtype=np.float32), 16000)
+    model = backend._model
+    assert isinstance(model, _RecordingModel)
+    assert model.kwargs is not None
+    assert model.kwargs["vad_filter"] is True
+
+
+def test_vad_filter_off_when_disabled() -> None:
+    backend = _backend(TranscriptionConfig(device="cpu"), [])
+    backend.transcribe(np.zeros(1600, dtype=np.float32), 16000)
+    model = backend._model
+    assert isinstance(model, _RecordingModel)
+    assert model.kwargs is not None
+    assert model.kwargs["vad_filter"] is False
+
+
+def _fw_config(vad_backend: str) -> Any:
+    return load_config_from_dict(
+        {
+            "transcription": {"backend": "faster-whisper", "device": "cpu"},
+            "audio": {"vad_backend": vad_backend},
+        }
+    )
+
+
+def test_factory_maps_silero_to_vad_filter_on() -> None:
+    backend = create_backend(_fw_config("silero"))
+    assert isinstance(backend, FasterWhisperBackend)
+    assert backend._vad_filter is True
+
+
+def test_factory_maps_none_and_energy_to_vad_filter_off() -> None:
+    for value in ("none", "energy"):
+        backend = create_backend(_fw_config(value))
+        assert isinstance(backend, FasterWhisperBackend)
+        assert backend._vad_filter is False, value
+
+
+def test_default_config_enables_vad_filter() -> None:
+    # audio.vad_backend now defaults to "silero" (#107), so the default filters.
+    config = load_config_from_dict(
+        {"transcription": {"backend": "faster-whisper", "device": "cpu"}}
+    )
+    backend = create_backend(config)
+    assert isinstance(backend, FasterWhisperBackend)
+    assert backend._vad_filter is True

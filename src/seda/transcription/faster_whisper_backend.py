@@ -43,6 +43,7 @@ class FasterWhisperBackend:
         offline: bool = False,
         cuda_available: Callable[[], bool] | None = None,
         custom_vocabulary: list[str] | None = None,
+        vad_filter: bool = False,
     ) -> None:
         self._config = config
         self._offline = offline
@@ -50,6 +51,10 @@ class FasterWhisperBackend:
         # Vocabulary lives on TextConfig, not TranscriptionConfig; the factory
         # plumbs it in so it can bias decoding via the initial prompt (§13).
         self._custom_vocabulary: list[str] = list(custom_vocabulary or [])
+        # Whether to run faster-whisper's built-in (bundled Silero) VAD filter,
+        # which drops non-speech before decoding and cuts silence-hallucination
+        # (#107). Derived by the factory from audio.vad_backend == "silero".
+        self._vad_filter = vad_filter
         self._model: Any | None = None
         self._device = resolve_device(config.device, cuda_available=cuda_available)
 
@@ -131,6 +136,7 @@ class FasterWhisperBackend:
                 temperature=self._config.temperature,
                 condition_on_previous_text=self._config.condition_on_previous_text,
                 initial_prompt=initial_prompt or None,
+                vad_filter=self._vad_filter,
             )
             # Transcription runs lazily during iteration; join the segments.
             text = "".join(segment.text for segment in segments).strip()

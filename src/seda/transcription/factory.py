@@ -34,6 +34,7 @@ def create_backend(
             offline=offline,
             cuda_available=cuda_available,
             custom_vocabulary=config.text.custom_vocabulary,
+            vad_filter=(config.audio.vad_backend == "silero"),
         )
     if backend == "fake":
         return FakeBackend()
