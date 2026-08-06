@@ -22,7 +22,7 @@ import threading
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from seda.config import HotkeysConfig, select_push_to_talk
+from seda.config import HotkeysConfig, select_push_to_talk, select_toggle_mode
 from seda.errors import HotkeyError
 
 
@@ -34,6 +34,7 @@ class HotkeyProvider(Protocol):
         on_press: Callable[[], None],
         on_release: Callable[[], None],
         on_cancel: Callable[[], None],
+        on_toggle_mode: Callable[[], None] = lambda: None,
     ) -> None: ...
 
     def stop(self) -> None: ...
@@ -433,6 +434,9 @@ class PynputHotkeyProvider:
         self._chord_keys = _chord_key_names(self._ptt_key)
         self._chord_modifiers = _chord_modifier_names(self._ptt_key)
         self._cancel_key = config.cancel
+        # The mode-cycle chord (#109); registered as a key-down GlobalHotKey
+        # alongside cancel. Like cancel, it is not suppressed from the focused app.
+        self._toggle_key = select_toggle_mode(config)
         # Suppress the chord keys (issues #11/#12) and the cancel key (issue #13)
         # from leaking to the focused app while the chord is engaged.
         self._suppressor = _ChordSuppressor(
@@ -443,6 +447,7 @@ class PynputHotkeyProvider:
         self._on_press_cb: Callable[[], None] = lambda: None
         self._on_release_cb: Callable[[], None] = lambda: None
         self._on_cancel_cb: Callable[[], None] = lambda: None
+        self._on_toggle_mode_cb: Callable[[], None] = lambda: None
         self._pressed = False
         self._lock = threading.Lock()
         self._listener: Any = None
@@ -463,6 +468,7 @@ class PynputHotkeyProvider:
         on_press: Callable[[], None],
         on_release: Callable[[], None],
         on_cancel: Callable[[], None],
+        on_toggle_mode: Callable[[], None] = lambda: None,
     ) -> None:
         """Register hotkeys and start listening.
 
@@ -471,6 +477,7 @@ class PynputHotkeyProvider:
         self._on_press_cb = on_press
         self._on_release_cb = on_release
         self._on_cancel_cb = on_cancel
+        self._on_toggle_mode_cb = on_toggle_mode
 
         try:
             from pynput import keyboard
@@ -526,14 +533,22 @@ class PynputHotkeyProvider:
 
         try:
             cancel_normalized = _normalize_hotkey(self._cancel_key)
-            cancel_listener = keyboard.GlobalHotKeys({cancel_normalized: self._on_cancel})
+            toggle_normalized = _normalize_hotkey(self._toggle_key)
+            # One GlobalHotKeys serves both key-down globals: cancel and the
+            # mode-cycle toggle (#109).
+            cancel_listener = keyboard.GlobalHotKeys(
+                {
+                    cancel_normalized: self._on_cancel,
+                    toggle_normalized: self._on_toggle_mode,
+                }
+            )
             cancel_listener.start()
             self._cancel_listener = cancel_listener
         except Exception as exc:  # noqa: BLE001
             # Stop the PTT listener we already started.
             with contextlib.suppress(Exception):
                 self._listener.stop()
-            raise HotkeyError(f"could not register cancel hotkey: {exc}") from exc
+            raise HotkeyError(f"could not register cancel/toggle hotkeys: {exc}") from exc
 
     def stop(self) -> None:
         """Stop both hotkey listeners."""
@@ -637,3 +652,6 @@ class PynputHotkeyProvider:
 
     def _on_cancel(self) -> None:
         self._on_cancel_cb()
+
+    def _on_toggle_mode(self) -> None:
+        self._on_toggle_mode_cb()

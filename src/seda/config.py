@@ -418,6 +418,20 @@ def select_push_to_talk(config: HotkeysConfig, *, platform: str | None = None) -
     return str(getattr(config, f"push_to_talk_{_platform_key(plat)}"))
 
 
+def select_toggle_mode(config: HotkeysConfig, *, platform: str | None = None) -> str:
+    """Return the effective toggle-mode hotkey for the current platform.
+
+    Mirrors :func:`select_push_to_talk`: an explicit ``toggle_mode`` value wins
+    on every platform; otherwise the platform-appropriate default is used.
+    ``platform`` defaults to :data:`sys.platform` and is injectable so tests
+    stay deterministic regardless of the host OS.
+    """
+    if config.toggle_mode:
+        return config.toggle_mode
+    plat = platform if platform is not None else sys.platform
+    return str(getattr(config, f"toggle_mode_{_platform_key(plat)}"))
+
+
 def select_overlay_enabled(
     config: OverlayConfig, *, no_overlay: bool = False, platform: str | None = None
 ) -> bool:

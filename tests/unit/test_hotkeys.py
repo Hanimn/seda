@@ -143,6 +143,18 @@ class TestPynputHotkeyProviderDedup:
         provider._on_cancel()
         assert len(cancel_calls) == 1
 
+    def test_toggle_mode_fires_on_toggle_callback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider, _, _ = _build_provider(monkeypatch)
+        toggle_calls: list[None] = []
+        provider.start(
+            on_press=lambda: None,
+            on_release=lambda: None,
+            on_cancel=lambda: None,
+            on_toggle_mode=lambda: toggle_calls.append(None),
+        )
+        provider._on_toggle_mode()
+        assert len(toggle_calls) == 1
+
 
 class TestPynputHotkeyProviderReleaseKey:
     """Release must be tied to the PTT trigger key, not any key (issue #10).
