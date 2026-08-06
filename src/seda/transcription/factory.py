@@ -30,7 +30,10 @@ def create_backend(
     backend = config.transcription.backend
     if backend in ("faster-whisper", "faster_whisper"):
         return FasterWhisperBackend(
-            config.transcription, offline=offline, cuda_available=cuda_available
+            config.transcription,
+            offline=offline,
+            cuda_available=cuda_available,
+            custom_vocabulary=config.text.custom_vocabulary,
         )
     if backend == "fake":
         return FakeBackend()
