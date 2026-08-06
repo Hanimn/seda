@@ -42,10 +42,14 @@ class FasterWhisperBackend:
         *,
         offline: bool = False,
         cuda_available: Callable[[], bool] | None = None,
+        custom_vocabulary: list[str] | None = None,
     ) -> None:
         self._config = config
         self._offline = offline
         self._cuda_available = cuda_available
+        # Vocabulary lives on TextConfig, not TranscriptionConfig; the factory
+        # plumbs it in so it can bias decoding via the initial prompt (§13).
+        self._custom_vocabulary: list[str] = list(custom_vocabulary or [])
         self._model: Any | None = None
         self._device = resolve_device(config.device, cuda_available=cuda_available)
 
@@ -115,7 +119,9 @@ class FasterWhisperBackend:
         if self._model is None:
             raise TranscriptionError("transcribe called before load")
 
-        initial_prompt = build_initial_prompt([], explicit=self._config.initial_prompt)
+        initial_prompt = build_initial_prompt(
+            self._custom_vocabulary, explicit=self._config.initial_prompt
+        )
         start = time.monotonic()
         try:
             segments, info = self._model.transcribe(
