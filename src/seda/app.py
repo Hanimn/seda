@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from seda.audio.recorder import RecordedAudio
     from seda.cleanup.base import CleanupProvider
     from seda.input.hotkeys import HotkeyProvider
-    from seda.input.paste import TextInserter
+    from seda.input.paste import Inserter
     from seda.transcription.base import TranscriptionBackend
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class AppController:
         *,
         hotkey_provider: HotkeyProvider | None = None,
         backend: TranscriptionBackend | None = None,
-        text_inserter: TextInserter | None = None,
+        text_inserter: Inserter | None = None,
         cleanup_provider: CleanupProvider | None = None,
         notifier: Notifier | None = None,
         copy_only: bool = False,
@@ -101,7 +101,7 @@ class AppController:
         if text_inserter is None:
             from seda.input.paste import build_text_inserter
 
-            self._inserter: TextInserter = build_text_inserter(config.paste)
+            self._inserter: Inserter = build_text_inserter(config.paste)
         else:
             self._inserter = text_inserter
 

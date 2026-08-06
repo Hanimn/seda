@@ -41,11 +41,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "InsertionResult",
+    "Inserter",
     "MultilinePolicy",
     "PasteBackend",
     "PasteError",
     "PynputPasteBackend",
     "TextInserter",
+    "TypeBackend",
+    "TypeTextInserter",
     "build_text_inserter",
     "select_shortcut",
 ]
@@ -86,14 +89,38 @@ def select_shortcut(
     return config.shortcut_linux_gui
 
 
-def build_text_inserter(config: PasteConfig) -> TextInserter:
-    """Construct a production :class:`TextInserter` from ``config`` (§16).
+def _flatten_multiline(text: str, policy: MultilinePolicy) -> str:
+    """Collapse newline runs to single spaces when ``policy`` is ``flatten``.
 
-    Wires the real ``pyperclip`` clipboard and ``pynput`` paste backend, and
-    selects the platform paste shortcut.  Deferred import of the clipboard
-    provider keeps ``pyperclip`` off the ``--help`` / config-only import path.
+    ``preserve`` and ``copy_only`` return the text unchanged. Shared by both
+    inserters so the flattening rule lives in exactly one place.
+    """
+    if policy != "flatten":
+        return text
+    # Replace CR/LF (and surrounding runs) with single spaces.
+    flattened = text.replace("\r\n", "\n").replace("\r", "\n")
+    parts = [line.strip() for line in flattened.split("\n")]
+    return " ".join(part for part in parts if part)
+
+
+def build_text_inserter(config: PasteConfig) -> Inserter:
+    """Construct a production text inserter from ``config`` (§16).
+
+    Wires the real ``pyperclip`` clipboard and ``pynput`` backend. When
+    ``config.method == "type"`` the transcript is typed as keystrokes (for apps
+    that block synthetic paste); otherwise the default clipboard+paste-shortcut
+    inserter is used. Deferred import of the clipboard provider keeps
+    ``pyperclip`` off the ``--help`` / config-only import path.
     """
     from seda.input.clipboard import PyperclipClipboard
+
+    if config.method == "type":
+        return TypeTextInserter(
+            clipboard=PyperclipClipboard(),
+            type_backend=PynputPasteBackend(),
+            multiline_policy=config.multiline_policy,
+            append_space=config.append_space,
+        )
 
     return TextInserter(
         clipboard=PyperclipClipboard(),
@@ -122,6 +149,39 @@ class PasteBackend(Protocol):
 
         Best-effort; a backend with no thread-sensitive init may no-op.
         """
+        ...
+
+
+class TypeBackend(Protocol):
+    """Types text directly as keystrokes at the focused cursor."""
+
+    def type_text(self, text: str) -> None:
+        """Type ``text`` as individual keystrokes.
+
+        Newlines are sanitized to spaces so this can never press Enter/Return
+        (the "never submit" guarantee, §3, §16). Raises :class:`PasteError` if
+        the keystrokes could not be delivered.
+        """
+        ...
+
+    def warm(self) -> None:
+        """Optionally pre-build platform machinery on the calling thread (#89)."""
+        ...
+
+
+class Inserter(Protocol):
+    """Delivers a finished transcript to the cursor.
+
+    Two implementations satisfy this: :class:`TextInserter` (clipboard + paste
+    shortcut) and :class:`TypeTextInserter` (direct keystrokes).
+    """
+
+    def insert(self, text: str, *, copy_only: bool = False) -> InsertionResult:
+        """Insert ``text`` at the cursor, or just copy it (``copy_only``)."""
+        ...
+
+    def warm(self) -> None:
+        """Pre-build platform machinery on the caller's thread (best-effort)."""
         ...
 
 
@@ -256,20 +316,74 @@ class TextInserter:
     def _apply_multiline_policy(self, text: str) -> str:
         """Flatten newlines to spaces when the policy asks for it.
 
-        ``preserve`` and ``copy_only`` keep the text verbatim; ``flatten``
-        collapses every run of newline whitespace to a single space so a
-        terminal cannot interpret embedded newlines as separate commands.
+        Delegates to the shared :func:`_flatten_multiline` helper so the rule
+        is defined once for both inserters.
         """
-        if self._multiline_policy != "flatten":
-            return text
-        # Replace CR/LF (and surrounding runs) with single spaces.
-        flattened = text.replace("\r\n", "\n").replace("\r", "\n")
-        parts = [line.strip() for line in flattened.split("\n")]
-        return " ".join(part for part in parts if part)
+        return _flatten_multiline(text, self._multiline_policy)
 
     def _delay(self, milliseconds: int) -> None:
         if milliseconds > 0:
             self._sleep(milliseconds / 1000.0)
+
+
+class TypeTextInserter:
+    """Inserts a transcript by typing it as keystrokes (``paste.method="type"``).
+
+    For applications that block synthetic paste, this types the transcript
+    directly via a :class:`TypeBackend` rather than the clipboard + paste
+    shortcut. It still honors copy-only (an explicit ``copy_only`` or a
+    ``copy_only`` multiline policy) by placing the text on the clipboard and
+    NOT typing, and it never presses Enter — the backend sanitizes newlines to
+    spaces. The clipboard is touched only on the copy-only or type-failure
+    paths; a successful type leaves it untouched.
+    """
+
+    def __init__(
+        self,
+        *,
+        clipboard: ClipboardProvider,
+        type_backend: TypeBackend,
+        multiline_policy: MultilinePolicy = "preserve",
+        append_space: bool = False,
+    ) -> None:
+        self._clipboard = clipboard
+        self._type_backend = type_backend
+        self._multiline_policy = multiline_policy
+        self._append_space = append_space
+
+    def insert(self, text: str, *, copy_only: bool = False) -> InsertionResult:
+        """Type ``text`` at the cursor, or just copy it (``copy_only``)."""
+        if not text:
+            return InsertionResult()
+
+        payload = _flatten_multiline(text, self._multiline_policy)
+        if self._append_space:
+            payload += " "
+
+        # Copy-only (explicit or the copy_only multiline policy): leave the text
+        # on the clipboard and do not type — mirrors TextInserter's copy path.
+        if copy_only or self._multiline_policy == "copy_only":
+            self._clipboard.write_text(payload)
+            return InsertionResult(copied=True, pasted=False, restored=False)
+
+        try:
+            self._type_backend.type_text(payload)
+        except PasteError as exc:
+            # Typing failed: leave the transcript on the clipboard as a fallback
+            # (never retry with arbitrary keystrokes) and report the error.
+            self._clipboard.write_text(payload)
+            return InsertionResult(
+                copied=True, pasted=False, restored=False, error=str(exc)
+            )
+
+        return InsertionResult(copied=False, pasted=True, restored=False)
+
+    def warm(self) -> None:
+        """Pre-build the type backend's platform machinery (best-effort, #89)."""
+        warm = getattr(self._type_backend, "warm", None)
+        if callable(warm):
+            with contextlib.suppress(Exception):
+                warm()
 
 
 class PynputPasteBackend:
@@ -338,6 +452,24 @@ class PynputPasteBackend:
                 controller.release(mod)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - surfaced as a clean PasteError
             raise PasteError(f"could not deliver paste shortcut: {exc}") from exc
+
+    def type_text(self, text: str) -> None:
+        """Type ``text`` as keystrokes via the pynput controller.
+
+        Newlines are replaced with spaces before typing so this backend can
+        never press Enter/Return — upholding the "never submit" guarantee
+        (§3, §16) even in ``type`` mode. Empty text (after sanitizing) is a
+        no-op. Reuses the same lazily-built, warm-able controller as
+        :meth:`send_paste`.
+        """
+        safe = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+        if not safe:
+            return
+        controller = self._get_controller()
+        try:
+            controller.type(safe)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - surfaced as a clean PasteError
+            raise PasteError(f"could not type transcript: {exc}") from exc
 
     # ------------------------------------------------------------------
     # Internal
