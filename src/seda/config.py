@@ -133,7 +133,7 @@ class AudioConfig(_Section):
     minimum_duration_ms: int = Field(default=250, ge=0)
     maximum_duration_seconds: int = Field(default=180, gt=0)
     trim_silence: bool = True
-    vad_backend: Literal["energy", "silero", "none"] = "energy"
+    vad_backend: Literal["energy", "silero", "none"] = "silero"
     vad_threshold: float = Field(default=0.015, ge=0.0, le=1.0)
     leading_padding_ms: int = Field(default=150, ge=0)
     trailing_padding_ms: int = Field(default=300, ge=0)
