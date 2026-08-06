@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from seda.gui.host import Overlay, run_with_overlay
+from seda.gui.host import Overlay, _mode_row_title, run_with_overlay
 
 
 class _FakeTimer:
@@ -65,6 +65,13 @@ def _fake_overlay(teardown: Callable[[], None] | None = None) -> Overlay:
         _view=None,
         _timer_holder={"timer": None},
     )
+
+
+def test_mode_row_title_formats_mode() -> None:
+    # The #115 menu-bar Mode row title-cases the dictation mode.
+    assert _mode_row_title("polished") == "Mode:  Polished"
+    assert _mode_row_title("literal") == "Mode:  Literal"
+    assert _mode_row_title("standard") == "Mode:  Standard"
 
 
 def test_returns_false_on_non_macos() -> None:
