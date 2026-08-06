@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import signal
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -484,6 +485,7 @@ def _run_appkit_menu_bar_loop(
             controller.begin_hotkey_capture,
             controller.end_hotkey_capture,
             register_phase,
+            mode_getter=lambda: controller.current_mode,
         )
 
     _run_appkit_host(controller, app, overlay, register_overlay, build_extra=_build_extra)
@@ -1081,6 +1083,11 @@ def _build_settings_controller(
     return _SettingsController.alloc().init()
 
 
+def _mode_row_title(mode: str) -> str:
+    """Menu-row title for the active dictation mode (#115), e.g. 'Mode:  Polished'."""
+    return f"Mode:  {mode.title()}"
+
+
 def _build_status_item(
     app: Any,
     stop_requested: dict[str, bool],
@@ -1090,6 +1097,7 @@ def _build_status_item(
     on_capture_begin: Callable[[], None] | None = None,
     on_capture_end: Callable[[], None] | None = None,
     register_phase: Callable[[Callable[[Any], None]], None] | None = None,
+    mode_getter: Callable[[], str] | None = None,
 ) -> Callable[[], None]:
     """Create the ``NSStatusBar`` item + menu (Quit) and wire live status — issue #87.
 
@@ -1123,6 +1131,7 @@ def _build_status_item(
         NSVariableStatusItemLength,
         NSWorkspace,
     )
+    from Foundation import NSTimer
 
     from seda.notifications import status_phase_label, status_phase_symbol
 
@@ -1143,9 +1152,14 @@ def _build_status_item(
         except Exception:  # noqa: BLE001
             logger.debug("status-item glyph update failed; text-only", exc_info=True)
 
+    # Last coarse HUD mode applied to the label, so the #115 mode-flash can
+    # revert to the correct status label once the flash expires.
+    hud_mode_holder: dict[str, HudMode] = {"mode": HudMode.IDLE}
+
     def _apply(mode: HudMode) -> None:
         # Coarse HUD-mode sink (kept for back-compat + the READY/RECORDING/IDLE
         # transitions the HUD drives). Runs on the main thread.
+        hud_mode_holder["mode"] = mode
         _set_button(status_label(mode), status_symbol(mode))
 
     def _apply_phase(event: Any) -> None:
@@ -1255,6 +1269,14 @@ def _build_status_item(
                 logger.debug("menu header chord read failed", exc_info=True)
                 chord = "—"
             self._header_item.setTitle_(f"Push-to-talk:  {chord}")
+            # #115: refresh the active-mode row too, when wired.
+            getter = getattr(self, "_mode_getter", None)
+            mode_item = getattr(self, "_mode_item", None)
+            if getter is not None and mode_item is not None:
+                try:
+                    mode_item.setTitle_(_mode_row_title(getter()))
+                except Exception:  # noqa: BLE001 -- never let a mode read break the menu
+                    logger.debug("menu mode-row read failed", exc_info=True)
 
     header_delegate = _MenuHeaderDelegate.alloc().init()
 
@@ -1263,8 +1285,16 @@ def _build_status_item(
     header_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Push-to-talk:  —", "", "")
     header_item.setEnabled_(False)
     menu.addItem_(header_item)
+    # #115: a disabled row showing the active dictation mode (the session
+    # override the toggle_mode chord cycles, #109). Refreshed on menu-open and
+    # on change by the poll timer below.
+    mode_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Mode:  —", "", "")
+    mode_item.setEnabled_(False)
+    menu.addItem_(mode_item)
     menu.addItem_(NSMenuItem.separatorItem())
     header_delegate._header_item = header_item
+    header_delegate._mode_item = mode_item
+    header_delegate._mode_getter = mode_getter
     menu.setDelegate_(header_delegate)
     with contextlib.suppress(Exception):
         header_delegate._refresh_header()  # seed before first open
@@ -1301,6 +1331,38 @@ def _build_status_item(
     if register_phase is not None:
         register_phase(_apply_phase)
 
+    # #115: poll the active dictation mode ~5x/s on the main thread; on a change
+    # (the toggle_mode chord cycled it at IDLE, #109) briefly flash the status
+    # label with the new mode, then revert to the current HUD-mode label. The
+    # persistent Mode row above also shows it whenever the menu is open. The
+    # timer runs on the main run loop, so touching AppKit here is main-thread-safe.
+    mode_timer: Any = None
+    if mode_getter is not None:
+        getter = mode_getter
+        try:
+            initial_mode = getter()
+        except Exception:  # noqa: BLE001
+            initial_mode = ""
+        mode_state: dict[str, Any] = {"last": initial_mode, "flash_until": None}
+
+        def _poll_mode(_timer: Any) -> None:
+            try:
+                mode = getter()
+            except Exception:  # noqa: BLE001
+                return
+            now = time.monotonic()
+            if mode != mode_state["last"]:
+                mode_state["last"] = mode
+                mode_state["flash_until"] = now + 1.2
+                with contextlib.suppress(Exception):
+                    mode_item.setTitle_(_mode_row_title(mode))
+                _set_button(mode.title(), "slider.horizontal.3")
+            elif mode_state["flash_until"] is not None and now >= mode_state["flash_until"]:
+                mode_state["flash_until"] = None
+                _apply(hud_mode_holder["mode"])  # revert to the live status label
+
+        mode_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.2, True, _poll_mode)
+
     def _teardown() -> None:
         # Keep the menu-action targets + settings controller + main-thread runner
         # + the menu header delegate referenced until teardown so a menu action
@@ -1314,6 +1376,9 @@ def _build_status_item(
             runner,
             header_delegate,
         )
+        if mode_timer is not None:
+            with contextlib.suppress(Exception):
+                mode_timer.invalidate()
         status_bar.removeStatusItem_(item)
 
     return _teardown
