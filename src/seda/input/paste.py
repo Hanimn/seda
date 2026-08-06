@@ -372,9 +372,7 @@ class TypeTextInserter:
             # Typing failed: leave the transcript on the clipboard as a fallback
             # (never retry with arbitrary keystrokes) and report the error.
             self._clipboard.write_text(payload)
-            return InsertionResult(
-                copied=True, pasted=False, restored=False, error=str(exc)
-            )
+            return InsertionResult(copied=True, pasted=False, restored=False, error=str(exc))
 
         return InsertionResult(copied=False, pasted=True, restored=False)
 

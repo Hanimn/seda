@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -186,6 +186,49 @@ class TestPressCycle:
 
             time.sleep(0.05)
             assert ctrl._state_machine.state is AppState.RECORDING
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+
+class TestMaxDurationAutoStop:
+    """Auto-stop-and-transcribe when a recording hits the duration cap (#108)."""
+
+    def test_auto_stop_finalizes_and_pastes(self) -> None:
+        ctrl, hotkeys, be = _make_controller()
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            # The recorder's audio callback calls this at the cap; invoke it
+            # directly (it schedules the finalize on the worker thread).
+            ctrl._on_max_duration_reached()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0), "never returned to IDLE"
+            assert be.loaded
+            inserter = cast(_RecordingInserter, ctrl._inserter)
+            assert len(inserter.inserted) == 1  # transcribed + pasted exactly once
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_release_after_auto_stop_does_not_double_paste(self) -> None:
+        import time
+
+        ctrl, hotkeys, _ = _make_controller()
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            ctrl._on_max_duration_reached()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            # The key was still held; its eventual release must be a harmless
+            # no-op — the RECORDING->PROCESSING_AUDIO guard already fired.
+            hotkeys.on_release()
+            time.sleep(0.05)
+            inserter = cast(_RecordingInserter, ctrl._inserter)
+            assert len(inserter.inserted) == 1  # not doubled
         finally:
             ctrl.shutdown()
             t.join(timeout=3.0)
