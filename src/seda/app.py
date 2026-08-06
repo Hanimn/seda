@@ -81,6 +81,8 @@ class AppController:
         recorder_cfg = RecorderConfig(
             device=config.audio.device or None,
             sample_rate=config.audio.sample_rate,
+            channels=config.audio.channels,
+            trim_silence=config.audio.trim_silence,
             min_duration_ms=config.audio.minimum_duration_ms,
             max_duration_seconds=float(config.audio.maximum_duration_seconds),
             vad_threshold=config.audio.vad_threshold,

@@ -156,14 +156,16 @@ class TestRecordedAudio:
 class TestSounddeviceRecorderStopProcessing:
     """Test stop() processing path using monkeypatched sounddevice."""
 
-    def _make_recorder(self, monkeypatch, blocks: list[np.ndarray]) -> SounddeviceRecorder:
+    def _make_recorder(
+        self, monkeypatch, blocks: list[np.ndarray], config: RecorderConfig | None = None
+    ) -> SounddeviceRecorder:
         """Build a SounddeviceRecorder with pre-filled blocks, no real stream."""
         sd_mock = MagicMock()
         stream_mock = MagicMock()
         sd_mock.InputStream.return_value = stream_mock
         monkeypatch.setitem(sys.modules, "sounddevice", sd_mock)
 
-        rec = SounddeviceRecorder(RecorderConfig(min_duration_ms=50))
+        rec = SounddeviceRecorder(config or RecorderConfig(min_duration_ms=50))
         rec._blocks = blocks
         rec._overflow_count = 0
         rec._stream = stream_mock
@@ -188,6 +190,50 @@ class TestSounddeviceRecorderStopProcessing:
         rec = self._make_recorder(monkeypatch, [short])
         with pytest.raises(RecordingTooShortError):
             rec.stop()
+
+    def test_stop_trims_silence_by_default(self, monkeypatch):
+        # 1 s silence + 1 s speech + 1 s silence, trimming on (default).
+        signal = np.concatenate([_silence(RATE), _tone(RATE, 0.3), _silence(RATE)])
+        rec = self._make_recorder(monkeypatch, [signal.reshape(-1, 1)])
+        audio = rec.stop()
+        assert len(audio.samples) < len(signal)
+
+    def test_stop_without_trim_keeps_full_length(self, monkeypatch):
+        # trim_silence=False must leave the buffer untouched (raw audio).
+        signal = np.concatenate([_silence(RATE), _tone(RATE, 0.3), _silence(RATE)])
+        rec = self._make_recorder(
+            monkeypatch,
+            [signal.reshape(-1, 1)],
+            RecorderConfig(min_duration_ms=50, trim_silence=False),
+        )
+        audio = rec.stop()
+        assert len(audio.samples) == len(signal)
+
+
+class TestStartStream:
+    """start() honors the configured channel count (mono default, stereo opt-in)."""
+
+    def _sd_mock(self, monkeypatch) -> MagicMock:
+        sd_mock = MagicMock()
+        sd_mock.InputStream.return_value = MagicMock()
+        monkeypatch.setitem(sys.modules, "sounddevice", sd_mock)
+        return sd_mock
+
+    def test_start_defaults_to_mono(self, monkeypatch):
+        sd_mock = self._sd_mock(monkeypatch)
+        SounddeviceRecorder(RecorderConfig()).start()
+        assert sd_mock.InputStream.call_args.kwargs["channels"] == 1
+
+    def test_start_uses_configured_channels(self, monkeypatch):
+        sd_mock = self._sd_mock(monkeypatch)
+        SounddeviceRecorder(RecorderConfig(channels=2)).start()
+        assert sd_mock.InputStream.call_args.kwargs["channels"] == 2
+
+
+def test_recorder_config_defaults() -> None:
+    cfg = RecorderConfig()
+    assert cfg.trim_silence is True
+    assert cfg.channels == 1
 
 
 class TestLatestLevel:
