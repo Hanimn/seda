@@ -31,6 +31,7 @@ class FakeHotkeyProvider:
         self.on_press: Callable[[], None] = lambda: None
         self.on_release: Callable[[], None] = lambda: None
         self.on_cancel: Callable[[], None] = lambda: None
+        self.on_toggle_mode: Callable[[], None] = lambda: None
         self.stopped = False
         self.start_count = 0
         self.chord: str | None = None
@@ -41,10 +42,12 @@ class FakeHotkeyProvider:
         on_press: Callable[[], None],
         on_release: Callable[[], None],
         on_cancel: Callable[[], None],
+        on_toggle_mode: Callable[[], None] = lambda: None,
     ) -> None:
         self.on_press = on_press
         self.on_release = on_release
         self.on_cancel = on_cancel
+        self.on_toggle_mode = on_toggle_mode
         self.start_count += 1
         # A restart after a stop clears the stopped flag (models a live listener).
         self.stopped = False
@@ -229,6 +232,40 @@ class TestMaxDurationAutoStop:
             time.sleep(0.05)
             inserter = cast(_RecordingInserter, ctrl._inserter)
             assert len(inserter.inserted) == 1  # not doubled
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+
+class TestModeToggle:
+    """toggle_mode chord cycles the session dictation mode (#109)."""
+
+    def test_toggle_cycles_mode_at_idle(self) -> None:
+        ctrl, hotkeys, _ = _make_controller()
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            assert ctrl.current_mode == "standard"  # Config() default
+            hotkeys.on_toggle_mode()
+            assert ctrl.current_mode == "polished"
+            hotkeys.on_toggle_mode()
+            assert ctrl.current_mode == "literal"
+            hotkeys.on_toggle_mode()
+            assert ctrl.current_mode == "standard"  # wraps around
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_toggle_ignored_while_recording(self) -> None:
+        ctrl, hotkeys, _ = _make_controller()
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            before = ctrl.current_mode
+            hotkeys.on_toggle_mode()  # not IDLE -> gated, no change
+            assert ctrl.current_mode == before
         finally:
             ctrl.shutdown()
             t.join(timeout=3.0)

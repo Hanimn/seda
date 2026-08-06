@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from seda.audio.recorder import RecorderConfig, SounddeviceRecorder
 from seda.cleanup.base import CleanupCounters
-from seda.config import Config, select_push_to_talk
+from seda.config import Config, Mode, select_push_to_talk
 from seda.errors import (
     CleanupError,
     InvalidTransitionError,
@@ -47,6 +47,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Order the toggle_mode chord cycles through (#109): literal -> standard ->
+# polished -> literal. Matches the ``Mode`` literal in config.
+_MODE_CYCLE: tuple[Mode, ...] = ("literal", "standard", "polished")
+
 
 class AppController:
     """Top-level push-to-talk controller."""
@@ -65,6 +69,11 @@ class AppController:
     ) -> None:
         self._config = config
         self._copy_only = copy_only
+        # Session-only dictation mode (#109): starts from config, cycled live by
+        # the toggle_mode chord. Held under _mode_lock — written on the hotkey
+        # listener thread, read on the worker thread and the GUI pump.
+        self._mode_lock = threading.Lock()
+        self._mode: Mode = config.app.mode
         # Cleanup is on only when config enables it AND it isn't force-disabled
         # (e.g. `run --no-cleanup`). ``cleanup_enabled`` overrides the config
         # flag when provided.
@@ -152,6 +161,16 @@ class AppController:
         """
         return self._recorder.latest_level
 
+    @property
+    def current_mode(self) -> Mode:
+        """The active session dictation mode (#109), cycled by the toggle chord.
+
+        Thread-safe read for the worker's pipeline call and for a GUI host (e.g.
+        the menu-bar Mode indicator, #115).
+        """
+        with self._mode_lock:
+            return self._mode
+
     def warm_inserter(self) -> None:
         """Pre-build the text inserter's platform machinery on the caller's thread.
 
@@ -189,6 +208,7 @@ class AppController:
                 on_press=self._on_press,
                 on_release=self._on_release,
                 on_cancel=self._on_cancel,
+                on_toggle_mode=self._on_toggle_mode,
             )
         self._notifier.notify(NotificationEvent.READY)
 
@@ -379,6 +399,24 @@ class AppController:
         with contextlib.suppress(InvalidTransitionError):
             self._state_machine.transition(AppState.IDLE)
 
+    def _on_toggle_mode(self) -> None:
+        """Cycle the session dictation mode (#109) — fires on the listener thread.
+
+        Only at the IDLE resting point (mirrors reconfigure_hotkeys gating) so it
+        never races an in-flight cycle; the new mode takes effect on the next
+        dictation. Session-only — never writes config. On-screen feedback (the
+        menu-bar Mode indicator) is #115.
+        """
+        if self._capturing:
+            return
+        if self._state_machine.state is not AppState.IDLE:
+            return
+        with self._mode_lock:
+            idx = _MODE_CYCLE.index(self._mode)
+            self._mode = _MODE_CYCLE[(idx + 1) % len(_MODE_CYCLE)]
+            new_mode = self._mode
+        logger.info("dictation mode -> %s (session override)", new_mode)
+
     def _on_max_duration_reached(self) -> None:
         """Recorder hook — fires on the realtime AUDIO CALLBACK thread when a
         recording hits ``maximum_duration_seconds`` (#108, decision A).
@@ -447,7 +485,7 @@ class AppController:
         t0 = time.monotonic()
         pipeline = process_transcript(
             result.text,
-            mode=self._config.app.mode,
+            mode=self.current_mode,
             spoken_commands_enabled=self._config.text.spoken_commands_enabled,
         )
         logger.debug(
