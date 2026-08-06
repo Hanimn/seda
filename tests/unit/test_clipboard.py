@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import pytest
 
+from seda.config import load_config_from_dict
 from seda.input.clipboard import ClipboardProvider, FakeClipboard
 from seda.input.paste import (
     InsertionResult,
     PasteError,
     PynputPasteBackend,
     TextInserter,
+    TypeTextInserter,
+    build_text_inserter,
     select_shortcut,
 )
 
@@ -64,6 +67,142 @@ def _inserter(
         sleep=lambda _seconds: None,  # no real delays in tests
     )
     return inserter, cb, pb
+
+
+class FakeTypeBackend:
+    """Records typed text; can be told to fail on the next type_text call."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.typed: list[str] = []
+        self.warmed = False
+
+    def type_text(self, text: str) -> None:
+        self.typed.append(text)
+        if self.fail:
+            raise PasteError("simulated type failure")
+
+    def warm(self) -> None:
+        self.warmed = True
+
+
+def _type_inserter(
+    *,
+    multiline_policy: str = "preserve",
+    append_space: bool = False,
+    fail: bool = False,
+) -> tuple[TypeTextInserter, FakeClipboard, FakeTypeBackend]:
+    cb = FakeClipboard()
+    tb = FakeTypeBackend(fail=fail)
+    inserter = TypeTextInserter(
+        clipboard=cb,
+        type_backend=tb,
+        multiline_policy=multiline_policy,  # type: ignore[arg-type]
+        append_space=append_space,
+    )
+    return inserter, cb, tb
+
+
+class TestTypeTextInserter:
+    def test_types_without_touching_clipboard(self) -> None:
+        inserter, cb, tb = _type_inserter()
+        result = inserter.insert("hello world")
+        assert tb.typed == ["hello world"]
+        assert result.pasted is True
+        assert result.copied is False
+        assert result.error is None
+        assert cb.read_text() == ""  # a successful type leaves the clipboard alone
+
+    def test_empty_text_is_noop(self) -> None:
+        inserter, cb, tb = _type_inserter()
+        assert inserter.insert("") == InsertionResult()
+        assert tb.typed == []
+        assert cb.read_text() == ""
+
+    def test_copy_only_copies_and_does_not_type(self) -> None:
+        inserter, cb, tb = _type_inserter()
+        result = inserter.insert("secret", copy_only=True)
+        assert tb.typed == []
+        assert cb.read_text() == "secret"
+        assert result.copied is True
+        assert result.pasted is False
+
+    def test_copy_only_multiline_policy_does_not_type(self) -> None:
+        inserter, cb, tb = _type_inserter(multiline_policy="copy_only")
+        inserter.insert("do not type me")
+        assert tb.typed == []
+        assert cb.read_text() == "do not type me"
+
+    def test_flatten_policy_flattens_before_typing(self) -> None:
+        inserter, _cb, tb = _type_inserter(multiline_policy="flatten")
+        inserter.insert("line one\nline two")
+        assert tb.typed == ["line one line two"]
+
+    def test_append_space(self) -> None:
+        inserter, _cb, tb = _type_inserter(append_space=True)
+        inserter.insert("hi")
+        assert tb.typed == ["hi "]
+
+    def test_type_failure_falls_back_to_clipboard(self) -> None:
+        inserter, cb, tb = _type_inserter(fail=True)
+        result = inserter.insert("boom")
+        assert result.error is not None
+        assert result.pasted is False
+        assert result.copied is True
+        assert cb.read_text() == "boom"  # left on the clipboard as a fallback
+
+    def test_warm_delegates_to_backend(self) -> None:
+        inserter, _cb, tb = _type_inserter()
+        inserter.warm()
+        assert tb.warmed is True
+
+
+class _FakeController:
+    """Records ``type()`` calls; optionally raises to simulate a failure."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.typed: list[str] = []
+
+    def type(self, text: str) -> None:
+        self.typed.append(text)
+        if self.fail:
+            raise RuntimeError("controller boom")
+
+
+class TestPynputTypeText:
+    """PynputPasteBackend.type_text with an injected controller (no real keys)."""
+
+    def test_sanitizes_newlines_to_spaces(self) -> None:
+        backend = PynputPasteBackend()
+        ctrl = _FakeController()
+        backend._controller = ctrl
+        backend.type_text("line1\nline2\r\nline3\rline4")
+        # Every newline variant becomes a single space — never an Enter keypress.
+        assert ctrl.typed == ["line1 line2 line3 line4"]
+
+    def test_empty_text_types_nothing(self) -> None:
+        backend = PynputPasteBackend()
+        ctrl = _FakeController()
+        backend._controller = ctrl
+        backend.type_text("")
+        assert ctrl.typed == []
+
+    def test_controller_failure_becomes_paste_error(self) -> None:
+        backend = PynputPasteBackend()
+        backend._controller = _FakeController(fail=True)
+        with pytest.raises(PasteError):
+            backend.type_text("hello")
+
+
+class TestBuildTextInserterMethod:
+    def test_method_type_builds_type_inserter(self) -> None:
+        config = load_config_from_dict({"paste": {"method": "type"}})
+        assert isinstance(build_text_inserter(config.paste), TypeTextInserter)
+
+    def test_method_clipboard_builds_text_inserter(self) -> None:
+        config = load_config_from_dict({"paste": {"method": "clipboard"}})
+        assert isinstance(build_text_inserter(config.paste), TextInserter)
 
 
 # ---------------------------------------------------------------------------
