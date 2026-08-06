@@ -8,7 +8,9 @@ enforces min/max duration.
 
 from __future__ import annotations
 
+import contextlib
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,10 +78,6 @@ class RecordingTooShortError(AudioError):
     """Recording was shorter than the minimum duration."""
 
 
-class RecordingTooLongError(AudioError):
-    """Recording exceeded the maximum duration and was not auto-stopped."""
-
-
 class SounddeviceRecorder:
     """Callback-based microphone recorder backed by ``sounddevice``.
 
@@ -91,13 +89,27 @@ class SounddeviceRecorder:
         audio = recorder.stop()
     """
 
-    def __init__(self, config: RecorderConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: RecorderConfig | None = None,
+        *,
+        on_max_duration: Callable[[], None] | None = None,
+    ) -> None:
         self._cfg = config or RecorderConfig()
         self._blocks: list[np.ndarray] = []
         self._overflow_count: int = 0
         self._stream: Any = None
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        # Auto-stop at the configured cap (#108, decision A): the callback counts
+        # frames and fires ``on_max_duration`` exactly ONCE when the cap is
+        # crossed. The hook runs on the realtime callback thread, so the caller
+        # must keep it minimal — schedule the finalize elsewhere and never call
+        # :meth:`stop` from it (that would deadlock closing the stream).
+        self._on_max_duration = on_max_duration
+        self._max_frames = 0
+        self._total_frames = 0
+        self._max_fired = False
         # Most recent per-block RMS level (0.0 when idle), for the live overlay
         # (ADR-0002). Pulled via the ``latest_level`` property from the GUI's
         # main-thread timer; the audio thread only writes it.
@@ -130,6 +142,9 @@ class SounddeviceRecorder:
             self._blocks = []
             self._overflow_count = 0
             self._latest_level = 0.0
+            self._total_frames = 0
+            self._max_fired = False
+            self._max_frames = int(self._cfg.max_duration_seconds * self._cfg.sample_rate)
             self._stop_event.clear()
 
         try:
@@ -193,6 +208,8 @@ class SounddeviceRecorder:
             self._blocks = []
             self._overflow_count = 0
             self._latest_level = 0.0
+            self._total_frames = 0
+            self._max_fired = False
 
     # ------------------------------------------------------------------
     # Internal
@@ -201,13 +218,16 @@ class SounddeviceRecorder:
     def _callback(
         self,
         indata: np.ndarray,
-        frames: int,  # noqa: ARG002
+        frames: int,
         time: object,  # noqa: ARG002
         status: object,
     ) -> None:
         """sounddevice audio callback — runs on a dedicated C thread.
 
-        Must not do disk I/O, model inference, or expensive logging.
+        Must not do disk I/O, model inference, or expensive logging. Counts
+        frames and fires the one-shot ``on_max_duration`` hook when the
+        configured cap is crossed (#108); the hook must be cheap and must never
+        call :meth:`stop` on this thread.
         """
         if status:
             with self._lock:
@@ -221,10 +241,25 @@ class SounddeviceRecorder:
             level = _rms(block)
         except Exception:  # noqa: BLE001
             level = None
+        hook: Callable[[], None] | None = None
         with self._lock:
             self._blocks.append(block)
             if level is not None:
                 self._latest_level = level
+            self._total_frames += frames
+            if (
+                self._on_max_duration is not None
+                and not self._max_fired
+                and self._max_frames > 0
+                and self._total_frames >= self._max_frames
+            ):
+                self._max_fired = True
+                hook = self._on_max_duration
+        if hook is not None:
+            # One-shot, outside the lock: hand off to the caller, which finalizes
+            # off this realtime thread. A hook failure must never harm recording.
+            with contextlib.suppress(Exception):
+                hook()
 
     def _close_stream(self) -> None:
         stream = self._stream

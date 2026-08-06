@@ -89,7 +89,9 @@ class AppController:
             leading_padding_ms=config.audio.leading_padding_ms,
             trailing_padding_ms=config.audio.trailing_padding_ms,
         )
-        self._recorder = SounddeviceRecorder(recorder_cfg)
+        self._recorder = SounddeviceRecorder(
+            recorder_cfg, on_max_duration=self._on_max_duration_reached
+        )
         self._backend: TranscriptionBackend = backend or create_backend(config)
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._shutdown_event = threading.Event()
@@ -325,6 +327,18 @@ class AppController:
     def _on_release(self) -> None:
         if self._capturing:
             return
+        self._finalize_recording()
+
+    def _finalize_recording(self) -> None:
+        """Stop recording and hand the audio to the worker.
+
+        Shared by the push-to-talk release (:meth:`_on_release`) and the
+        max-duration auto-stop (#108, :meth:`_auto_stop`). The
+        ``RECORDING -> PROCESSING_AUDIO`` transition is the guard: whichever of
+        the two fires first wins, and the other sees an ``InvalidTransitionError``
+        and bails — so a held key that hits the cap can never finalize (or paste)
+        the same recording twice.
+        """
         try:
             self._state_machine.transition(AppState.PROCESSING_AUDIO)
         except InvalidTransitionError:
@@ -364,6 +378,32 @@ class AppController:
         self._notifier.notify(NotificationEvent.CANCELLED)
         with contextlib.suppress(InvalidTransitionError):
             self._state_machine.transition(AppState.IDLE)
+
+    def _on_max_duration_reached(self) -> None:
+        """Recorder hook — fires on the realtime AUDIO CALLBACK thread when a
+        recording hits ``maximum_duration_seconds`` (#108, decision A).
+
+        Do the minimum here: schedule the finalize on the worker so
+        ``recorder.stop()`` never runs on the realtime thread (closing the
+        stream from inside its own callback would deadlock). Fail-open if the
+        executor is already shutting down (teardown).
+        """
+        with contextlib.suppress(Exception):
+            self._executor.submit(self._auto_stop)
+
+    def _auto_stop(self) -> None:
+        """Finalize a recording that hit the max-duration cap (worker thread, #108).
+
+        Auto-stop-and-transcribe: treat the cap like a key release and run the
+        normal finalize path. A quiet stuck key still yields a too-short
+        recording (silence-trimmed) and pastes nothing; only a long/noisy
+        capture produces text.
+        """
+        logger.warning(
+            "recording hit the maximum duration (%ss); auto-stopping",
+            self._config.audio.maximum_duration_seconds,
+        )
+        self._finalize_recording()
 
     # ------------------------------------------------------------------
     # Worker (runs on ThreadPoolExecutor thread — never on listener/callback)

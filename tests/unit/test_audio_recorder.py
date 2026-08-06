@@ -236,6 +236,66 @@ def test_recorder_config_defaults() -> None:
     assert cfg.channels == 1
 
 
+class TestMaxDurationAutoStop:
+    """The callback fires the one-shot on_max_duration hook at the cap (#108)."""
+
+    def _started(self, monkeypatch, cfg: RecorderConfig, hook) -> SounddeviceRecorder:
+        sd_mock = MagicMock()
+        sd_mock.InputStream.return_value = MagicMock()
+        monkeypatch.setitem(sys.modules, "sounddevice", sd_mock)
+        rec = SounddeviceRecorder(cfg, on_max_duration=hook)
+        rec.start()  # computes _max_frames, resets counters
+        return rec
+
+    def test_fires_hook_once_at_cap(self, monkeypatch):
+        calls: list[int] = []
+        cfg = RecorderConfig(sample_rate=RATE, max_duration_seconds=0.1)  # 1600 frames
+        rec = self._started(monkeypatch, cfg, lambda: calls.append(1))
+        block = _tone(1024, 0.3).reshape(-1, 1)
+        for _ in range(5):  # crosses 1600 on the 2nd block, then stays fired
+            rec._callback(block, 1024, None, None)
+        assert calls == [1]
+
+    def test_no_fire_before_cap(self, monkeypatch):
+        calls: list[int] = []
+        cfg = RecorderConfig(sample_rate=RATE, max_duration_seconds=1.0)  # 16000 frames
+        rec = self._started(monkeypatch, cfg, lambda: calls.append(1))
+        rec._callback(_tone(1024, 0.3).reshape(-1, 1), 1024, None, None)
+        assert calls == []
+
+    def test_hook_failure_never_breaks_recording(self, monkeypatch):
+        def boom() -> None:
+            raise RuntimeError("hook boom")
+
+        cfg = RecorderConfig(sample_rate=RATE, max_duration_seconds=0.1)
+        rec = self._started(monkeypatch, cfg, boom)
+        block = _tone(1024, 0.3).reshape(-1, 1)
+        for _ in range(3):
+            rec._callback(block, 1024, None, None)  # must not raise
+        assert len(rec._blocks) == 3
+
+    def test_start_resets_fired_flag(self, monkeypatch):
+        calls: list[int] = []
+        cfg = RecorderConfig(sample_rate=RATE, max_duration_seconds=0.1)
+        rec = self._started(monkeypatch, cfg, lambda: calls.append(1))
+        block = _tone(1024, 0.3).reshape(-1, 1)
+        for _ in range(3):
+            rec._callback(block, 1024, None, None)
+        assert calls == [1]
+        rec.start()  # resets counters + fired flag so a new recording can fire again
+        for _ in range(3):
+            rec._callback(block, 1024, None, None)
+        assert calls == [1, 1]
+
+    def test_no_hook_is_safe(self, monkeypatch):
+        cfg = RecorderConfig(sample_rate=RATE, max_duration_seconds=0.1)
+        rec = self._started(monkeypatch, cfg, None)
+        block = _tone(1024, 0.3).reshape(-1, 1)
+        for _ in range(3):
+            rec._callback(block, 1024, None, None)  # no hook -> no crash
+        assert len(rec._blocks) == 3
+
+
 class TestLatestLevel:
     """The pulled per-block RMS hand-off for the overlay (ADR-0002)."""
 
