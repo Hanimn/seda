@@ -62,7 +62,9 @@ class RecorderConfig:
 
     device: int | str | None = None
     sample_rate: int = TARGET_SAMPLE_RATE
+    channels: int = 1
     blocksize: int = 1024
+    trim_silence: bool = True
     vad_threshold: float = _DEFAULT_VAD_THRESHOLD
     leading_padding_ms: int = _DEFAULT_LEADING_PAD_MS
     trailing_padding_ms: int = _DEFAULT_TRAILING_PAD_MS
@@ -134,7 +136,7 @@ class SounddeviceRecorder:
             self._stream = sd.InputStream(
                 device=self._cfg.device,
                 samplerate=self._cfg.sample_rate,
-                channels=1,
+                channels=self._cfg.channels,
                 dtype="float32",
                 blocksize=self._cfg.blocksize,
                 callback=self._callback,
@@ -162,13 +164,14 @@ class SounddeviceRecorder:
 
         raw = np.concatenate(blocks, axis=0).squeeze()
         samples = _to_mono_float32(raw)
-        samples = _trim_silence(
-            samples,
-            self._cfg.sample_rate,
-            self._cfg.vad_threshold,
-            self._cfg.leading_padding_ms,
-            self._cfg.trailing_padding_ms,
-        )
+        if self._cfg.trim_silence:
+            samples = _trim_silence(
+                samples,
+                self._cfg.sample_rate,
+                self._cfg.vad_threshold,
+                self._cfg.leading_padding_ms,
+                self._cfg.trailing_padding_ms,
+            )
 
         min_samples = int(self._cfg.min_duration_ms / 1000 * self._cfg.sample_rate)
         if len(samples) < min_samples:
