@@ -56,8 +56,12 @@ Custom vocabulary (`text.custom_vocabulary`) is used to build an initial prompt 
 
 ## Clipboard handling limitations
 
-The current release uses `pyperclip`, which provides text-only clipboard access. Non-text clipboard contents (images, files, rich text) are read as empty text. This means:
+On **macOS**, Seda uses a native `NSPasteboard` provider that preserves the
+full clipboard — including non-text contents (images, files, rich text) — and
+restores it after a paste cycle, race-checked the same way as text.
+
+On **other platforms**, the provider is `pyperclip`, which is text-only:
 
 - If your prior clipboard held a non-text item, it cannot be restored after paste.
 - The application detects this and skips restoration (it does not claim to have restored a non-text clipboard).
-- A native, multi-format clipboard provider is deferred to a future release.
+- Native multi-format providers for those platforms are deferred to a future release.

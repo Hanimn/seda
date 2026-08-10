@@ -103,27 +103,47 @@ def _flatten_multiline(text: str, policy: MultilinePolicy) -> str:
     return " ".join(part for part in parts if part)
 
 
+def _default_clipboard() -> ClipboardProvider:
+    """Pick the production clipboard provider for this platform (#147).
+
+    macOS gets the native ``NSPasteboard`` provider (non-text preservation via
+    the snapshot capability); if PyObjC is unavailable there — or on any other
+    platform — the pyperclip text-only provider is the fallback.
+    """
+    if sys.platform == "darwin":
+        import contextlib as _contextlib
+
+        with _contextlib.suppress(Exception):
+            from seda.input.pasteboard_macos import MacOSNativeClipboard
+
+            return MacOSNativeClipboard()
+    from seda.input.clipboard import PyperclipClipboard
+
+    return PyperclipClipboard()
+
+
 def build_text_inserter(config: PasteConfig) -> Inserter:
     """Construct a production text inserter from ``config`` (§16).
 
-    Wires the real ``pyperclip`` clipboard and ``pynput`` backend. When
-    ``config.method == "type"`` the transcript is typed as keystrokes (for apps
-    that block synthetic paste); otherwise the default clipboard+paste-shortcut
-    inserter is used. Deferred import of the clipboard provider keeps
-    ``pyperclip`` off the ``--help`` / config-only import path.
+    Wires the platform clipboard (:func:`_default_clipboard`) and ``pynput``
+    backend. When ``config.method == "type"`` the transcript is typed as
+    keystrokes (for apps that block synthetic paste); otherwise the default
+    clipboard+paste-shortcut inserter is used. Deferred import of the
+    clipboard provider keeps ``pyperclip`` off the ``--help`` / config-only
+    import path.
     """
-    from seda.input.clipboard import PyperclipClipboard
+    clipboard = _default_clipboard()
 
     if config.method == "type":
         return TypeTextInserter(
-            clipboard=PyperclipClipboard(),
+            clipboard=clipboard,
             type_backend=PynputPasteBackend(),
             multiline_policy=config.multiline_policy,
             append_space=config.append_space,
         )
 
     return TextInserter(
-        clipboard=PyperclipClipboard(),
+        clipboard=clipboard,
         paste_backend=PynputPasteBackend(),
         shortcut=select_shortcut(config),
         restore_clipboard=config.restore_clipboard,
@@ -274,6 +294,15 @@ class TextInserter:
 
         # Step 1: remember the prior clipboard text (may be None if non-text).
         prior = self._clipboard.read_text()
+        # Non-text preservation (#147): when the clipboard holds something the
+        # text-only seam can't represent (image, files) AND the provider
+        # implements the optional snapshot capability, capture the full
+        # pasteboard before we overwrite it so it can be restored later.
+        snapshot: object | None = None
+        if prior is None:
+            snapshotter = getattr(self._clipboard, "snapshot", None)
+            if callable(snapshotter):
+                snapshot = snapshotter()
 
         # Step 2: put the transcript on the clipboard.
         self._clipboard.write_text(payload)
@@ -301,7 +330,7 @@ class TextInserter:
         self._delay(self._restore_delay_ms)
 
         # Step 6: restore the prior clipboard only when it is safe to do so.
-        restored = self._maybe_restore(prior, payload)
+        restored = self._maybe_restore(prior, payload, snapshot)
         return InsertionResult(copied=True, pasted=True, restored=restored)
 
     def warm(self) -> None:
@@ -322,15 +351,29 @@ class TextInserter:
     # Internal
     # ------------------------------------------------------------------
 
-    def _maybe_restore(self, prior: str | None, payload: str) -> bool:
-        """Restore ``prior`` iff restoration is on, prior was text, and the
-        clipboard still holds the transcript we wrote (race-safe, §16 step 6)."""
+    def _maybe_restore(
+        self, prior: str | None, payload: str, snapshot: object | None = None
+    ) -> bool:
+        """Restore the pre-paste clipboard iff restoration is on and the
+        clipboard still holds the transcript we wrote (race-safe, §16 step 6).
+
+        Text clipboards go back via ``write_text``. A *non-text* prior
+        clipboard goes back via the provider's optional ``restore(snapshot)``
+        capability (#147) when one was captured; without it we cannot
+        faithfully restore and do not claim to (§16 "do not claim full
+        restoration").
+        """
         if not self._restore_clipboard:
             return False
         if prior is None:
-            # The prior clipboard was non-text; we cannot faithfully restore it,
-            # so we do not claim to (§16 "do not claim full restoration").
-            return False
+            restorer = getattr(self._clipboard, "restore", None)
+            if snapshot is None or not callable(restorer):
+                return False
+            if self._clipboard.read_text() != payload:
+                # The user copied something new while we worked — never overwrite it.
+                return False
+            restorer(snapshot)
+            return True
         if self._clipboard.read_text() != payload:
             # The user copied something new while we worked — never overwrite it.
             return False

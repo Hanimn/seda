@@ -111,5 +111,6 @@ class TestPlayerDispatch:
             lambda name: "/usr/bin/paplay" if name == "paplay" else None,
         )
         monkeypatch.setattr(player_module.subprocess, "Popen", _FakePopen)
-        player_module.play_sound(Path("/tmp/x.wav"))
-        assert calls == [["/usr/bin/paplay", "/tmp/x.wav"]]
+        target = Path("/tmp/x.wav")
+        player_module.play_sound(target)
+        assert calls == [["/usr/bin/paplay", str(target)]]
