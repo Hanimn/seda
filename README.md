@@ -14,7 +14,7 @@ Local-first, system-wide voice dictation — optimized for dictating prompts int
 Claude Code and other terminal applications. Hold a global push-to-talk hotkey,
 speak, release, and get **editable** text at your cursor.
 
-> **Status:** v0.1.0 — all 8 phases complete, verified end-to-end on macOS.
+> **Status:** v0.2.0 — menu-bar app, Windows HUD, wired config, audit-hardened.
 > Implemented: the
 > project skeleton, local `faster-whisper` transcription, microphone capture,
 > global push-to-talk hotkeys, deterministic text processing (spoken commands,

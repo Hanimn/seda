@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "seda"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first, system-wide voice dictation optimized for dictating prompts into terminal applications."
 readme = "README.md"
 requires-python = ">=3.11"
