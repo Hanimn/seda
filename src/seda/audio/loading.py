@@ -61,10 +61,15 @@ def load_wav(path: Path) -> LoadedAudio:
     if not frames:
         raise EmptyAudioError(f"{path} contains no audio samples")
 
-    raw = np.frombuffer(frames, dtype=_WIDTH_TO_DTYPE[width])
-    if channels > 1:
-        # Interleaved frames → (frames, channels), then average to mono.
-        raw = raw.reshape(-1, channels).mean(axis=1)
+    try:
+        raw = np.frombuffer(frames, dtype=_WIDTH_TO_DTYPE[width])
+        if channels > 1:
+            # Interleaved frames → (frames, channels), then average to mono.
+            raw = raw.reshape(-1, channels).mean(axis=1)
+    except ValueError as exc:
+        # A file truncated mid-frame opens fine but breaks the decode; report
+        # it like any other unreadable WAV, not as a raw traceback.
+        raise AudioError(f"{path} is not a readable PCM WAV file: {exc}") from exc
 
     samples = _to_float32(raw, width)
     return LoadedAudio(samples=samples, sample_rate=sample_rate)
