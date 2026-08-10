@@ -42,6 +42,13 @@ Seda is built to be safe around terminals and coding agents:
 
 ```bash
 uv sync --extra dev
+uv run seda setup   # guided first run: checks, model, hotkey, writes config
+```
+
+Or the manual path:
+
+```bash
+uv sync --extra dev
 uv run seda doctor
 uv run seda config init
 ```
