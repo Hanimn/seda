@@ -102,6 +102,23 @@ custom_vocabulary = [
 
 Vocabulary terms are passed as transcription hints only — they are not sent to any network service.
 
+### Per-project vocabulary (`.seda.toml`)
+
+Drop a `.seda.toml` in a project root to add repo-specific terms on top of the
+global list. Seda walks up from the current directory and uses the nearest one
+(`run`, `gui`, and `transcribe` paths only — `config validate/show-effective`
+and the GUI settings stay global-only, so a settings save never leaks repo
+terms into your global config):
+
+```toml
+[text]
+custom_vocabulary = ["seda", "AppController", "PasteboardSnapshot"]
+```
+
+Repo entries come first, then the global list, deduplicated case-insensitively.
+Only `text.custom_vocabulary` is read from the overlay; every other key is
+ignored.
+
 ## Known limitations with Claude Code
 
 - **Bracketed paste**: some terminal configurations interpret multiline paste differently. If lines are submitted individually rather than as a block, set `multiline_policy = "flatten"` or configure your terminal's bracketed-paste setting.
