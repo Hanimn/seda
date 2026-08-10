@@ -18,6 +18,7 @@ import signal
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from seda.audio.recorder import RecorderConfig, SounddeviceRecorder
@@ -447,8 +448,34 @@ class AppController:
     # Worker (runs on ThreadPoolExecutor thread — never on listener/callback)
     # ------------------------------------------------------------------
 
+    def _maybe_retain_debug_audio(self, audio: RecordedAudio) -> None:
+        """Write the captured audio to the debug directory when enabled (#126).
+
+        Opt-in via ``app.retain_debug_audio`` + ``app.debug_audio_directory``
+        (both must be set, per PRIVACY.md). Files are owner-only (0600) from
+        birth. Fully fail-open: a retention failure must never break a
+        dictation cycle.
+        """
+        if not self._config.app.retain_debug_audio:
+            return
+        directory = self._config.app.debug_audio_directory
+        if not directory:
+            logger.warning(
+                "app.retain_debug_audio is enabled but app.debug_audio_directory "
+                "is not set; skipping retention"
+            )
+            return
+        try:
+            from seda.audio.dump import write_debug_wav
+
+            path = write_debug_wav(Path(directory).expanduser(), audio.samples, audio.sample_rate)
+            logger.debug("debug audio retained: %s", path)
+        except SedaError as exc:
+            logger.warning("could not retain debug audio: %s", exc)
+
     def _process_audio(self, audio: RecordedAudio) -> None:
         cycle_start = time.monotonic()
+        self._maybe_retain_debug_audio(audio)
         try:
             self._state_machine.transition(AppState.TRANSCRIBING)
         except InvalidTransitionError:
@@ -478,6 +505,11 @@ class AppController:
             t_transcribe,
             len(result.text),
         )
+        if self._config.app.log_transcripts:
+            # Explicit content opt-in (#126): the raw backend transcript at
+            # DEBUG. The startup warning fires at configure_logging time; the
+            # log file is owner-only.
+            logger.debug("raw transcript: %s", result.text)
 
         # Deterministic text processing (Phase 4): spoken commands, technical
         # token protection, filler handling, normalization. A beginning-of-
@@ -514,6 +546,10 @@ class AppController:
         t0 = time.monotonic()
         final_text = self._maybe_clean(pipeline)
         logger.debug("perf: cleanup=%.3fs", time.monotonic() - t0)
+        if self._config.app.log_transcripts:
+            # Explicit content opt-in (#126): the final text handed to the
+            # inserter at DEBUG.
+            logger.debug("final transcript: %s", final_text)
 
         # Insert the text at the cursor (Phase 5). Insertion never presses
         # Enter; a paste failure leaves the transcript on the clipboard.

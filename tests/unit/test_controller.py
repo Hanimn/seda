@@ -7,6 +7,7 @@ time.sleep anywhere.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from typing import Any, cast
@@ -939,3 +940,95 @@ class TestWarmInserter:
         assert inserter.warmed == 0
         ctrl.warm_inserter()
         assert inserter.warmed == 1
+
+
+# ---------------------------------------------------------------------------
+# Debug-knob wiring (#126): retain_debug_audio + log_transcripts
+# ---------------------------------------------------------------------------
+
+
+class TestDebugAudioRetention:
+    def test_retains_wav_when_enabled(self, tmp_path: Any) -> None:
+        from seda.config import load_config_from_dict
+
+        cfg = load_config_from_dict(
+            {"app": {"retain_debug_audio": True, "debug_audio_directory": str(tmp_path)}}
+        )
+        ctrl, hotkeys, _ = _make_controller(config=cfg)
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            files = list(tmp_path.glob("seda-*.wav"))
+            assert len(files) == 1
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_no_file_when_disabled(self, tmp_path: Any) -> None:
+        from seda.config import load_config_from_dict
+
+        cfg = load_config_from_dict(
+            {"app": {"retain_debug_audio": False, "debug_audio_directory": str(tmp_path)}}
+        )
+        ctrl, hotkeys, _ = _make_controller(config=cfg)
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            assert list(tmp_path.glob("seda-*.wav")) == []
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+
+class TestTranscriptLoggingGate:
+    def _capture_seda_log(self) -> tuple[list[str], logging.Handler]:
+        records: list[str] = []
+
+        class _ListHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record.getMessage())
+
+        handler = _ListHandler()
+        logger = logging.getLogger("seda")
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        return records, handler
+
+    def _run_cycle(self, cfg: Config, *, text: str) -> list[str]:
+        records, handler = self._capture_seda_log()
+        ctrl, hotkeys, _ = _make_controller(config=cfg, backend=FakeBackend(text=text))
+        t = _run_in_thread(ctrl)
+        try:
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+            logging.getLogger("seda").removeHandler(handler)
+        return records
+
+    def test_transcript_logged_when_enabled(self) -> None:
+        from seda.config import load_config_from_dict
+
+        cfg = load_config_from_dict({"app": {"log_transcripts": True}})
+        records = self._run_cycle(cfg, text="dictate this secret sentence")
+        # The transcript must appear in a DEBUG record when the opt-in is on.
+        assert any("dictate this secret sentence" in message for message in records)
+
+    def test_transcript_never_logged_when_disabled(self) -> None:
+        from seda.config import load_config_from_dict
+
+        cfg = load_config_from_dict({"app": {"log_transcripts": False}})
+        records = self._run_cycle(cfg, text="dictate this secret sentence")
+        assert not any("dictate this secret sentence" in message for message in records)
