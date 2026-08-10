@@ -54,6 +54,22 @@ pip install -e ".[dev]"
 seda doctor
 ```
 
+## Updating
+
+Seda is installed and upgraded as a [uv tool](https://docs.astral.sh/uv/guides/tools/):
+
+```bash
+uv tool upgrade seda
+```
+
+With `pip`: `pip install --upgrade seda`.
+
+There is intentionally **no auto-update and no update check** — Seda makes no
+network connections beyond the ones you ask for (see
+[`docs/PRIVACY.md`](docs/PRIVACY.md)). New versions are announced on the
+[releases page](https://github.com/Hanimn/seda/releases); upgrading is always
+your explicit action.
+
 The speech backend and optional cleanup are separate extras:
 
 ```bash
