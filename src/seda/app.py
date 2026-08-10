@@ -106,6 +106,11 @@ class AppController:
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._shutdown_event = threading.Event()
         self._pending_future: Future[None] | None = None
+        # Per-cycle copy-only flag (#148): set by the dedicated copy-only
+        # chord's press, cleared by the normal PTT press; read on the worker.
+        # Safe as a single slot because the state machine forbids overlapping
+        # cycles (a press only takes at IDLE).
+        self._cycle_copy_only = False
 
         # Aggregate, content-free cleanup counters (§28).
         self._cleanup_counters = CleanupCounters()
@@ -210,6 +215,8 @@ class AppController:
                 on_release=self._on_release,
                 on_cancel=self._on_cancel,
                 on_toggle_mode=self._on_toggle_mode,
+                on_copy_only_press=self._on_copy_only_press,
+                on_copy_only_release=self._on_copy_only_release,
             )
         self._notifier.notify(NotificationEvent.READY)
 
@@ -336,6 +343,7 @@ class AppController:
                 self._notifier.notify(NotificationEvent.ERROR)
                 self._state_machine.transition(AppState.IDLE)
                 return
+            self._cycle_copy_only = False
             self._notifier.notify(NotificationEvent.RECORDING)
         elif state in (
             AppState.PROCESSING_AUDIO,
@@ -344,6 +352,40 @@ class AppController:
             AppState.PASTING,
         ):
             self._notifier.notify(NotificationEvent.BUSY)
+
+    def _on_copy_only_press(self) -> None:
+        """Copy-only chord press (#148): like PTT, but the cycle copies only."""
+        if self._capturing:
+            return
+        state = self._state_machine.state
+        if state is AppState.IDLE:
+            try:
+                self._state_machine.transition(AppState.RECORDING)
+            except InvalidTransitionError:
+                return
+            try:
+                self._recorder.start()
+            except SedaError as exc:
+                logger.error("could not start recorder: %s", exc)
+                self._state_machine.transition(AppState.ERROR)
+                self._notifier.notify(NotificationEvent.ERROR)
+                self._state_machine.transition(AppState.IDLE)
+                return
+            self._cycle_copy_only = True
+            self._notifier.notify(NotificationEvent.RECORDING)
+        elif state in (
+            AppState.PROCESSING_AUDIO,
+            AppState.TRANSCRIBING,
+            AppState.CLEANING,
+            AppState.PASTING,
+        ):
+            self._notifier.notify(NotificationEvent.BUSY)
+
+    def _on_copy_only_release(self) -> None:
+        """Copy-only chord release (#148): same finalize path as PTT release."""
+        if self._capturing:
+            return
+        self._finalize_recording()
 
     def _on_release(self) -> None:
         if self._capturing:
@@ -563,7 +605,9 @@ class AppController:
         self._notifier.notify(NotificationEvent.PASTING)
 
         t0 = time.monotonic()
-        insertion = self._inserter.insert(final_text, copy_only=self._copy_only)
+        insertion = self._inserter.insert(
+            final_text, copy_only=self._copy_only or self._cycle_copy_only
+        )
         t_paste = time.monotonic() - t0
 
         if insertion.error is not None:

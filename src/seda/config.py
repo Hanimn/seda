@@ -104,11 +104,28 @@ class HotkeysConfig(_Section):
     toggle_mode_windows: str = "<ctrl>+<alt>+m"
     toggle_mode_linux: str = "<ctrl>+<alt>+m"
 
+    # Dedicated copy-only chord (#148): hold to record, release to transcribe
+    # straight to the clipboard WITHOUT pasting. Empty everywhere = disabled
+    # (the daily-driver second chord is opt-in). Same override + per-platform
+    # idiom as push_to_talk / toggle_mode.
+    copy_only: str = ""
+    copy_only_macos: str = ""
+    copy_only_windows: str = ""
+    copy_only_linux: str = ""
+
     @model_validator(mode="after")
     def _check_hotkey_syntax(self) -> HotkeysConfig:
-        # The override fields (push_to_talk / toggle_mode) may be empty, meaning
-        # "defer to the platform default"; the per-platform fields must not be.
-        optional = ("push_to_talk", "toggle_mode")
+        # The override fields (push_to_talk / toggle_mode / copy_only) may be
+        # empty, meaning "defer to the platform default" (or "disabled" for
+        # copy_only); the per-platform PTT/toggle fields must not be.
+        optional = (
+            "push_to_talk",
+            "toggle_mode",
+            "copy_only",
+            "copy_only_macos",
+            "copy_only_windows",
+            "copy_only_linux",
+        )
         required = (
             "cancel",
             "push_to_talk_macos",
@@ -505,6 +522,19 @@ def select_toggle_mode(config: HotkeysConfig, *, platform: str | None = None) ->
         return config.toggle_mode
     plat = platform if platform is not None else sys.platform
     return str(getattr(config, f"toggle_mode_{_platform_key(plat)}"))
+
+
+def select_copy_only(config: HotkeysConfig, *, platform: str | None = None) -> str:
+    """Return the effective copy-only hotkey for the current platform (#148).
+
+    Mirrors :func:`select_push_to_talk`: an explicit ``copy_only`` value wins
+    on every platform; otherwise the platform-appropriate field is used. Empty
+    (the default everywhere) means the second chord is disabled.
+    """
+    if config.copy_only:
+        return config.copy_only
+    plat = platform if platform is not None else sys.platform
+    return str(getattr(config, f"copy_only_{_platform_key(plat)}"))
 
 
 def select_overlay_enabled(
