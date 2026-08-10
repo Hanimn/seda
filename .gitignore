@@ -19,6 +19,8 @@ coverage.xml
 
 # Local Flow — never commit user data / machine artifacts (see IMPLEMENTATION_PLAN.md §21, §38)
 *.wav
+# ...except the bundled notification cue WAVs, which ARE the product (#145).
+!src/seda/notifications/sounds/*.wav
 *.flac
 *.mp3
 models/
