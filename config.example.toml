@@ -135,6 +135,10 @@ shortcut_linux_terminal = "ctrl+shift+v"
 auto_submit = false
 
 [notifications]
+# Master switch for audio cues (#145). Cues play bundled WAVs via the
+# platform's player (afplay / winsound / paplay / aplay); a per-event field
+# below overrides the bundled default with your own WAV path (empty = bundled,
+# missing file = silent). All local, fire-and-forget, fail-open.
 sound_enabled = true
 console_enabled = true
 recording_start_sound = ""
