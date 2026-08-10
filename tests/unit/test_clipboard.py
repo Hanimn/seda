@@ -20,6 +20,7 @@ from seda.input.paste import (
     PynputPasteBackend,
     TextInserter,
     TypeTextInserter,
+    _tap_shortcut,
     build_text_inserter,
     select_shortcut,
 )
@@ -600,3 +601,66 @@ class TestPasteWarm:
         backend = PynputPasteBackend()
         backend.warm()  # must not raise
         assert backend._controller is None
+
+
+# ---------------------------------------------------------------------------
+# _tap_shortcut — the modifier-release guarantee (stuck-modifier guard)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingController:
+    """Records press/release calls; optionally raises on a chosen (op, key)."""
+
+    def __init__(self, *, fail_at: tuple[str, object] | None = None) -> None:
+        self.fail_at = fail_at
+        self.events: list[tuple[str, object]] = []
+
+    def press(self, key: object) -> None:
+        self.events.append(("press", key))
+        if self.fail_at == ("press", key):
+            raise RuntimeError("press boom")
+
+    def release(self, key: object) -> None:
+        self.events.append(("release", key))
+        if self.fail_at == ("release", key):
+            raise RuntimeError("release boom")
+
+
+class TestTapShortcut:
+    def test_happy_path_presses_and_releases_in_order(self) -> None:
+        ctrl = _RecordingController()
+        _tap_shortcut(ctrl, ["CTRL", "SHIFT"], "V")
+        assert ctrl.events == [
+            ("press", "CTRL"),
+            ("press", "SHIFT"),
+            ("press", "V"),
+            ("release", "V"),
+            ("release", "SHIFT"),
+            ("release", "CTRL"),
+        ]
+
+    def test_modifiers_released_when_main_key_press_fails(self) -> None:
+        ctrl = _RecordingController(fail_at=("press", "V"))
+        with pytest.raises(RuntimeError, match="press boom"):
+            _tap_shortcut(ctrl, ["CTRL", "SHIFT"], "V")
+        # Both already-pressed modifiers are released despite the failure.
+        assert ("release", "CTRL") in ctrl.events
+        assert ("release", "SHIFT") in ctrl.events
+
+    def test_modifier_released_when_a_later_modifier_press_fails(self) -> None:
+        ctrl = _RecordingController(fail_at=("press", "SHIFT"))
+        with pytest.raises(RuntimeError, match="press boom"):
+            _tap_shortcut(ctrl, ["CTRL", "SHIFT"], "V")
+        assert ctrl.events == [
+            ("press", "CTRL"),
+            ("press", "SHIFT"),
+            ("release", "CTRL"),
+        ]
+
+    def test_main_key_released_when_its_own_release_fails(self) -> None:
+        ctrl = _RecordingController(fail_at=("release", "V"))
+        with pytest.raises(RuntimeError, match="release boom"):
+            _tap_shortcut(ctrl, ["CTRL"], "V")
+        # Cleanup still unwinds everything it pressed (release errors in the
+        # unwind itself are swallowed so the original failure wins).
+        assert ("release", "CTRL") in ctrl.events
