@@ -1,8 +1,9 @@
 """User notifications and feedback (IMPLEMENTATION_PLAN.md §18).
 
-Only console notifications are implemented in Phase 3.  Sound playback
-is deferred to Phase 7/8 hardening.  Output lines contain metadata only —
-never transcript text, clipboard contents, or secrets.
+Console status lines plus optional sound cues (#145). Output lines contain
+metadata only — never transcript text, clipboard contents, or secrets.
+Cues play bundled WAVs (or a user-supplied path) through the platform's
+player, fire-and-forget and fully fail-open.
 """
 
 from __future__ import annotations
@@ -12,7 +13,10 @@ import math
 import sys
 from collections.abc import Callable, Sequence
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol, TextIO, runtime_checkable
+
+from seda.config import NotificationsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +255,62 @@ class ConsoleNotifier:
                 return f"[done] {char_count} characters"
             return "[done]"
         return f"[{event.value.lower()}]"
+
+
+class SoundNotifier:
+    """Plays short audio cues off the notification stream (#145).
+
+    Event → cue mapping is deliberately 1:1 and unambiguous:
+    ``RECORDING`` → start, ``TRANSCRIBING`` → stop (fires exactly once per
+    finalize, right after the recorder stops), ``SUCCESS`` → success,
+    ``ERROR`` → error. Everything else is silent. Cues come from the bundled
+    WAVs; a per-event config path overrides the bundled default (empty field =
+    bundled). A custom path that doesn't exist resolves to silence, never an
+    error. Playback is fire-and-forget and fully fail-open.
+    """
+
+    _SOUNDS_DIR = Path(__file__).parent / "sounds"
+
+    def __init__(
+        self,
+        config: NotificationsConfig,
+        *,
+        play: Callable[[Path], None] | None = None,
+    ) -> None:
+        self._enabled = config.sound_enabled
+        self._custom = {
+            NotificationEvent.RECORDING: config.recording_start_sound,
+            NotificationEvent.TRANSCRIBING: config.recording_stop_sound,
+            NotificationEvent.SUCCESS: config.success_sound,
+            NotificationEvent.ERROR: config.error_sound,
+        }
+        from seda.notifications.player import play_sound
+
+        self._play: Callable[[Path], None] = play if play is not None else play_sound
+
+    def notify(self, event: NotificationEvent, **kwargs: Any) -> None:
+        if not self._enabled or event not in self._custom:
+            return
+        custom = self._custom[event]
+        if custom:
+            candidate = Path(custom).expanduser()
+            path = candidate if candidate.is_file() else None
+        else:
+            path = self._SOUNDS_DIR / f"{_EVENT_CUE_NAMES[event]}.wav"
+        if path is None:
+            return
+        try:
+            self._play(path)
+        except Exception:  # noqa: BLE001 - a cue failure never breaks dictation
+            pass
+
+
+_EVENT_CUE_NAMES: dict[NotificationEvent, str] = {
+    NotificationEvent.RECORDING: "start",
+    NotificationEvent.TRANSCRIBING: "stop",
+    NotificationEvent.SUCCESS: "success",
+    NotificationEvent.ERROR: "error",
+}
 
 
 class FanOutNotifier:

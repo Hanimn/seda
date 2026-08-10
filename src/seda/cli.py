@@ -254,13 +254,18 @@ def _build_controller(
     sinks, and ``cfg`` so the caller can read overlay/notification settings.
     """
     from seda.app import AppController
-    from seda.notifications import ConsoleNotifier, FanOutNotifier
+    from seda.notifications import ConsoleNotifier, FanOutNotifier, SoundNotifier
 
     cfg = _safe_load(config)
     configure_logging(cfg)
     # ``--no-cleanup`` force-disables cleanup; otherwise the config flag decides.
     cleanup_enabled = None if not no_cleanup else False
-    notifier = FanOutNotifier([ConsoleNotifier(enabled=cfg.notifications.console_enabled)])
+    notifier = FanOutNotifier(
+        [
+            ConsoleNotifier(enabled=cfg.notifications.console_enabled),
+            SoundNotifier(cfg.notifications),
+        ]
+    )
     controller = AppController(
         cfg, copy_only=no_paste, cleanup_enabled=cleanup_enabled, notifier=notifier
     )
