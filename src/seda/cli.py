@@ -20,6 +20,7 @@ from seda import __version__
 from seda.config import (
     Config,
     ConfigError,
+    apply_project_overlay,
     default_config_path,
     load_config,
     render_toml,
@@ -527,7 +528,7 @@ def transcribe(
     from seda.transcription.factory import create_backend
 
     try:
-        loaded_config = load_config(config)
+        loaded_config = apply_project_overlay(load_config(config))
     except ConfigError as exc:
         _err(str(exc))
         raise typer.Exit(code=int(ExitCode.CONFIG)) from exc
@@ -745,9 +746,14 @@ def models_download(
 
 
 def _safe_load(config: Path | None) -> Config:
-    """Load config or exit with a readable config error (exit code 2)."""
+    """Load config (with the per-project overlay) or exit with a readable
+    config error (exit code 2).
+
+    The ``.seda.toml`` vocabulary overlay (#151) applies on dictation paths;
+    settings and ``config validate/show-effective`` stay global-only.
+    """
     try:
-        return load_config(config)
+        return apply_project_overlay(load_config(config))
     except ConfigError as exc:
         _err(str(exc))
         raise typer.Exit(code=int(ExitCode.CONFIG)) from exc

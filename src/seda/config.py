@@ -537,6 +537,61 @@ def select_copy_only(config: HotkeysConfig, *, platform: str | None = None) -> s
     return str(getattr(config, f"copy_only_{_platform_key(plat)}"))
 
 
+# --- Per-project vocabulary overlay (.seda.toml) -----------------------------
+
+#: Overlay filename searched from the working directory upward (#151).
+PROJECT_OVERLAY_NAME = ".seda.toml"
+
+
+def find_project_overlay(start: Path | None = None) -> Path | None:
+    """Return the nearest ``.seda.toml`` walking up from *start* (default: CWD).
+
+    The repo being dictated into usually IS the current project root, so the
+    first overlay found on the way to the filesystem root wins.
+    """
+    directory = (start or Path.cwd()).resolve()
+    for candidate_dir in (directory, *directory.parents):
+        candidate = candidate_dir / PROJECT_OVERLAY_NAME
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def apply_project_overlay(config: Config, *, start: Path | None = None) -> Config:
+    """Merge per-project vocabulary from ``.seda.toml`` into *config* (#151).
+
+    The overlay is deliberately narrow — the ONLY key read is
+    ``text.custom_vocabulary`` (repo entries first, then global,
+    case-insensitive dedupe), because repo jargon should win the initial-prompt
+    ordering. Applied only on dictation paths (``run``/``gui``/``transcribe``);
+    settings and ``config validate/show-effective`` stay global-only so a
+    settings save can never leak repo vocabulary into the global file.
+    """
+    overlay = find_project_overlay(start)
+    if overlay is None:
+        return config
+    try:
+        data = tomllib.loads(overlay.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"could not parse project overlay {overlay}: {exc}") from exc
+    vocab = data.get("text", {}).get("custom_vocabulary", [])
+    if not isinstance(vocab, list) or not all(isinstance(v, str) for v in vocab):
+        raise ConfigError(f"{overlay}: text.custom_vocabulary must be a list of strings")
+    if not vocab:
+        return config
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for term in [*vocab, *config.text.custom_vocabulary]:
+        key = term.casefold()
+        if key not in seen:
+            seen.add(key)
+            merged.append(term)
+    return config.model_copy(
+        update={"text": config.text.model_copy(update={"custom_vocabulary": merged})}
+    )
+
+
 def select_overlay_enabled(
     config: OverlayConfig, *, no_overlay: bool = False, platform: str | None = None
 ) -> bool:

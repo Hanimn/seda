@@ -667,3 +667,74 @@ def test_copy_only_hotkey_invalid_is_rejected() -> None:
     with pytest.raises(ConfigError) as exc:
         load_config_from_dict({"hotkeys": {"copy_only": "<ctrl>+notakey"}})
     assert "hotkeys.copy_only" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Per-project vocabulary overlay (.seda.toml) — #151
+# ---------------------------------------------------------------------------
+
+
+def _write(path, text):
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+class TestFindProjectOverlay:
+    def test_nearest_overlay_walking_up_wins(self, tmp_path: Path) -> None:
+        from seda.config import find_project_overlay
+
+        root = _write(tmp_path / ".seda.toml", "")
+        nested = tmp_path / "a" / "b"
+        nested.mkdir(parents=True)
+        near = _write(tmp_path / "a" / ".seda.toml", "")
+        assert find_project_overlay(nested) == near
+        assert find_project_overlay(tmp_path) == root
+
+    def test_none_when_absent(self, tmp_path: Path) -> None:
+        from seda.config import find_project_overlay
+
+        assert find_project_overlay(tmp_path) is None
+
+
+class TestApplyProjectOverlay:
+    def test_vocab_merges_repo_first_deduped(self, tmp_path: Path) -> None:
+        from seda.config import apply_project_overlay
+
+        _write(
+            tmp_path / ".seda.toml",
+            '[text]\ncustom_vocabulary = ["RepoTerm", "shared"]\n',
+        )
+        cfg = load_config_from_dict({"text": {"custom_vocabulary": ["global", "Shared"]}})
+        merged = apply_project_overlay(cfg, start=tmp_path)
+        # Repo entries first, global after, case-insensitive dedupe.
+        assert merged.text.custom_vocabulary == ["RepoTerm", "shared", "global"]
+
+    def test_no_overlay_returns_config_unchanged(self, tmp_path: Path) -> None:
+        from seda.config import apply_project_overlay
+
+        cfg = load_config_from_dict({"text": {"custom_vocabulary": ["global"]}})
+        assert apply_project_overlay(cfg, start=tmp_path).text.custom_vocabulary == ["global"]
+
+    def test_overlay_without_vocab_key_is_a_noop(self, tmp_path: Path) -> None:
+        from seda.config import apply_project_overlay
+
+        _write(tmp_path / ".seda.toml", "[audio]\nsample_rate = 16000\n")
+        cfg = load_config_from_dict({"text": {"custom_vocabulary": ["global"]}})
+        assert apply_project_overlay(cfg, start=tmp_path).text.custom_vocabulary == ["global"]
+
+    def test_invalid_toml_raises_config_error(self, tmp_path: Path) -> None:
+        from seda.config import apply_project_overlay
+
+        _write(tmp_path / ".seda.toml", "not = [valid\n")
+        cfg = load_config_from_dict({})
+        with pytest.raises(ConfigError) as exc:
+            apply_project_overlay(cfg, start=tmp_path)
+        assert ".seda.toml" in str(exc.value)
+
+    def test_non_list_vocab_raises_config_error(self, tmp_path: Path) -> None:
+        from seda.config import apply_project_overlay
+
+        _write(tmp_path / ".seda.toml", '[text]\ncustom_vocabulary = "oops"\n')
+        cfg = load_config_from_dict({})
+        with pytest.raises(ConfigError):
+            apply_project_overlay(cfg, start=tmp_path)

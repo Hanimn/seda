@@ -1044,3 +1044,19 @@ def test_test_mic_failure_exits_with_audio_code(monkeypatch: pytest.MonkeyPatch)
     result = runner.invoke(app, ["test-mic", "--duration", "0"])
     assert result.exit_code == 3
     assert "mic boom" in result.stderr
+
+
+def test_safe_load_applies_project_overlay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dictation load path picks up .seda.toml vocabulary from CWD (#151)."""
+    from seda.cli import _safe_load
+
+    global_cfg = tmp_path / "global.toml"
+    global_cfg.write_text('[text]\ncustom_vocabulary = ["global"]\n', encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".seda.toml").write_text(
+        '[text]\ncustom_vocabulary = ["RepoJargon"]\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(repo)
+    cfg = _safe_load(global_cfg)
+    assert cfg.text.custom_vocabulary == ["RepoJargon", "global"]
