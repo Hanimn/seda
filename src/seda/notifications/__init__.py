@@ -275,7 +275,13 @@ class FanOutNotifier:
         self._notifiers.append(notifier)
 
     def notify(self, event: NotificationEvent, **kwargs: Any) -> None:
-        for notifier in self._notifiers:
+        # Iterate a snapshot: a child may add() a notifier from its own
+        # callback (the GUI registering its overlay mid-startup), and the
+        # listener/worker threads call notify() concurrently with the main
+        # thread's add(). Index-based iteration over a live list would visit
+        # a mid-flight append; a snapshot keeps each event's delivery set
+        # well-defined.
+        for notifier in list(self._notifiers):
             try:
                 notifier.notify(event, **kwargs)
             except Exception:  # noqa: BLE001
