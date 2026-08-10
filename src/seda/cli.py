@@ -772,5 +772,97 @@ def _warn_if_accessibility_untrusted() -> None:
         _err(f"warning: {ACCESSIBILITY_HELP}")
 
 
+@app.command()
+def setup(
+    config: Path | None = typer.Option(
+        None, "--config", help="Write to this path instead of the default."
+    ),
+) -> None:
+    """Guided first-run setup (#150).
+
+    Walks through: doctor checks (reused, not duplicated) → optional model
+    download → push-to-talk chord → writes the config. Idempotent: re-running
+    prefills from the existing file and asks before overwriting.
+    """
+    from seda.config import _validate_hotkey, select_push_to_talk
+
+    target = config or default_config_path()
+    typer.echo("Seda setup — guided first-run configuration.\n")
+
+    # 1. Doctor checks, reused verbatim (no duplicated probing).
+    typer.echo("Environment checks (same as `seda doctor`):")
+    for check in run_checks(str(target)):
+        typer.echo(f"  [{check.status.value.upper():4}] {check.name}: {check.detail}")
+    typer.echo("")
+
+    # 2. Prefill from an existing config when present (idempotent).
+    existing = target.exists()
+    cfg = _safe_load(config) if existing else Config()
+
+    # 3. Model download (explicit, user-confirmed — the only network step).
+    model = cfg.transcription.model
+    if typer.confirm(
+        f"Download the '{model}' transcription model now? (local cache; no account)",
+        default=True,
+    ):
+        try:
+            utils = _require_faster_whisper_utils()
+        except typer.Exit:
+            # faster-whisper not installed — note it and move on; setup must
+            # still produce a working config (the backend is a separate extra).
+            typer.echo(
+                f"  faster-whisper is not installed; skipping the download step. "
+                f"Install the 'whisper' extra, then run `seda models download {model}`."
+            )
+        else:
+            download_root = cfg.transcription.download_root or None
+            try:
+                path = utils.download_model(  # type: ignore[attr-defined]
+                    model, output_dir=download_root, local_files_only=False
+                )
+                typer.echo(f"model ready: {path}")
+            except Exception as exc:  # noqa: BLE001 - surfaced as a clean message
+                _err(f"could not download model '{model}': {exc}")
+
+    # 4. Push-to-talk chord (validated; empty keeps the platform default).
+    default_chord = select_push_to_talk(cfg.hotkeys)
+    while True:
+        answer = typer.prompt(
+            f"Push-to-talk chord (Enter keeps '{default_chord}')",
+            default="",
+            show_default=False,
+        ).strip()
+        if not answer:
+            chord = ""
+            break
+        try:
+            _validate_hotkey("hotkeys.push_to_talk", answer)
+        except ValueError as exc:
+            typer.echo(f"  invalid chord: {exc}")
+            continue
+        chord = answer
+        break
+    if chord:
+        cfg = cfg.model_copy(
+            update={"hotkeys": cfg.hotkeys.model_copy(update={"push_to_talk": chord})}
+        )
+
+    # 5. Write the config (confirm before overwriting an existing file).
+    if existing and not typer.confirm(f"Write the configuration to {target}?", default=True):
+        typer.echo("left the existing config unchanged.")
+        raise typer.Exit(code=int(ExitCode.SUCCESS))
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(render_toml(cfg), encoding="utf-8")
+    except OSError as exc:
+        _err(f"could not write config file {target}: {exc}")
+        raise typer.Exit(code=int(ExitCode.CONFIG)) from exc
+    typer.echo(f"\nwrote configuration to {target}")
+
+    # 6. Next steps.
+    _warn_if_accessibility_untrusted()
+    typer.echo("\nNext: `seda doctor` to re-check, then `seda run` and hold the chord.")
+
+
 if __name__ == "__main__":
     app()
