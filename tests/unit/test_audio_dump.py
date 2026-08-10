@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+import sys
 import wave
 from pathlib import Path
 
@@ -26,6 +27,7 @@ def test_writes_valid_int16_wav(tmp_path: Path) -> None:
         assert wf.getnframes() == 1600
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file-mode semantics")
 def test_file_is_owner_only_from_birth(tmp_path: Path) -> None:
     out = write_debug_wav(tmp_path, np.zeros(100, dtype=np.float32), 16000)
     # Debug audio is retained speech — 0600 from creation, never wider.
