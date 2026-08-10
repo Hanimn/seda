@@ -60,6 +60,7 @@ temperature = 0.0
 condition_on_previous_text = false
 initial_prompt = ""
 download_root = ""
+max_audio_mb = 500            # max WAV size `seda transcribe` will load (0 = unlimited)
 
 [text]
 spoken_commands_enabled = true

@@ -169,6 +169,9 @@ class TranscriptionConfig(_Section):
     condition_on_previous_text: bool = False
     initial_prompt: str = ""
     download_root: str = ""
+    # Maximum audio file size `seda transcribe` will load, in MiB (#127).
+    # 500 MiB ≈ 8 h of 16 kHz mono 16-bit PCM. 0 disables the guard.
+    max_audio_mb: int = Field(default=500, ge=0)
 
     @model_validator(mode="after")
     def _check_model(self) -> TranscriptionConfig:

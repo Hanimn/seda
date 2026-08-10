@@ -36,14 +36,25 @@ class LoadedAudio:
         return len(self.samples) / self.sample_rate
 
 
-def load_wav(path: Path) -> LoadedAudio:
+def load_wav(path: Path, *, max_bytes: int | None = None) -> LoadedAudio:
     """Load a PCM WAV file as mono ``float32`` in ``[-1.0, 1.0]``.
 
     Raises :class:`AudioError` for a missing file, a non-WAV/unsupported file,
-    or an empty recording.
+    an empty recording, or — when *max_bytes* is set — a file over the size
+    limit (rejected on its stat size, before the whole file is read into
+    memory; #127).
     """
     if not path.exists():
         raise AudioError(f"audio file not found: {path}")
+
+    if max_bytes is not None:
+        size = path.stat().st_size
+        if size > max_bytes:
+            raise AudioError(
+                f"{path} is {size / 1024 / 1024:.0f} MiB, over the "
+                f"{max_bytes // 1024 // 1024} MiB limit (transcription.max_audio_mb; "
+                "0 disables the guard)"
+            )
 
     try:
         with wave.open(str(path), "rb") as wav:

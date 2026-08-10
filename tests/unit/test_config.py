@@ -632,3 +632,14 @@ def test_apply_settings_edits_walks_nested_paths() -> None:
     """A 3-level path descends into nested tables, not a flat key (#88 review)."""
     updated = apply_settings_edits(Config(), {"cleanup.ollama.model": "qwen2.5:7b"})
     assert updated.cleanup.ollama.model == "qwen2.5:7b"
+
+
+def test_max_audio_mb_default_and_override() -> None:
+    assert load_config_from_dict({}).transcription.max_audio_mb == 500
+    config = load_config_from_dict({"transcription": {"max_audio_mb": 0}})
+    assert config.transcription.max_audio_mb == 0  # 0 = unlimited
+
+
+def test_max_audio_mb_negative_is_rejected() -> None:
+    with pytest.raises(ConfigError):
+        load_config_from_dict({"transcription": {"max_audio_mb": -1}})
