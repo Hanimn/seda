@@ -231,6 +231,23 @@ class TestFakeClipboard:
         assert cb.read_text() == ""
 
 
+class TestPyperclipClipboard:
+    def test_read_text_returns_none_on_backend_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A broken clipboard backend (no X, no xclip) degrades to 'no text'
+        instead of crashing the pipeline (#125)."""
+        import sys
+        import types
+
+        from seda.input.clipboard import PyperclipClipboard
+
+        broken = types.SimpleNamespace(
+            paste=lambda: (_ for _ in ()).throw(RuntimeError("no clipboard mechanism")),
+            copy=lambda _text: None,
+        )
+        monkeypatch.setitem(sys.modules, "pyperclip", broken)
+        assert PyperclipClipboard().read_text() is None
+
+
 # ---------------------------------------------------------------------------
 # Happy path: save → write → paste → restore
 # ---------------------------------------------------------------------------
