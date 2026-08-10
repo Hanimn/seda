@@ -21,6 +21,64 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   `local-flow` directory and no `seda` directory exists yet, `seda run` points
   you to it and how to move it (no automatic copy).
 - Added brand assets under `assets/brand/` and a README banner + status badges.
+- **Default VAD is now Silero** (`audio.vad_backend` defaults to `"silero"`,
+  wired to faster-whisper's `vad_filter`); `"energy"` is a deprecated alias for
+  `"none"` (#107, #113).
+
+### Added
+
+**macOS menu-bar app — `seda gui` (map #83, tickets #84–#90)**
+- `NSStatusBar` status item with live idle/listening/busy status, and a dropdown
+  with Settings, Open Logs, Doctor (in-process), and Quit (#87, #90).
+- Settings window (AppKit) reading/writing config, with an editable push-to-talk
+  chord: chord capture + live re-registration of the global listener without a
+  restart (#88, #89, #98).
+- Menu-bar phase labels, chord header, settings model popup, and an active-mode
+  indicator with a transient flash on mode switch (#98, #115).
+- Durable rotating file logging (1 MiB × 5) created owner-only (0600) from birth,
+  alongside the existing console handler (#85).
+
+**macOS floating waveform overlay (HUD) (epic #15, ADR-0001…0007)**
+- Non-activating floating `NSPanel` driven by the notifier fan-out
+  (ADR-0001/0003), with the GUI host owning the main thread and full fail-open
+  gating (`--no-overlay`, `overlay.enabled`, platform default) (ADR-0004).
+- Symmetric mirror-bar waveform fed by the recorder's latest-level RMS hand-off
+  (ADR-0002), responsive wave + post-release busy visual (#44).
+- Persistent-companion lifecycle: shown once on READY, never hidden by events
+  (ADR-0007).
+
+**Windows HUD overlay (epic #74, ADR-0008…0010)**
+- Windows overlay host with its own threading/event-loop model, platform-keyed
+  host selection, and the persistent-companion contract (#71–#73, #78).
+- `HudMode.IDLE` with a true 48×24 idle panel-shrink (Option-B sub-rect blit)
+  (#75–#82).
+
+**Config knobs that now actually take effect (map #100)**
+- `text.custom_vocabulary` biases Whisper decoding via the initial prompt (#101).
+- `audio.trim_silence` and `audio.channels` are honored by the recorder (#102).
+- `paste.method = "type"` types the transcript as keystrokes (never presses
+  Enter) for apps that block synthetic paste (#103).
+- `audio.maximum_duration_seconds` auto-stops a recording at the cap and
+  transcribes it via the normal path (#105, #108).
+- `hotkeys.toggle_mode` cycles the session dictation mode
+  (literal → standard → polished) with a menu-bar indicator (#106, #109, #115).
+- `audio.vad_backend` selects transcription-side VAD: `"silero"` enables
+  faster-whisper's `vad_filter`; `"none"` disables it (#107, #113).
+
+**Other**
+- Clear startup warning when the macOS Accessibility permission is missing (#33).
+- ADRs 0001–0011 and the supporting research notes and implementation specs
+  (overlay, HUD lifecycle, Windows host, menu-bar toolkit).
+
+### Fixed
+
+- Lingering HUD overlay on shutdown and a stop hang on Ctrl-C (#37).
+- Benign leaked-semaphore and `resource_tracker` warnings at shutdown and across
+  `run`/`transcribe` (#29, #81).
+- macOS listener-thread crashes: pre-warm `AXIsProcessTrusted` (#31) and the
+  Carbon Text-Input-Source init (#44) on the main thread.
+- Overlay fail-open boundary and startup/shutdown race (#47).
+- ObjC class-name collision in the status-item runner (#90).
 
 ---
 
