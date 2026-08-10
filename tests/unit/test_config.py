@@ -135,6 +135,55 @@ def test_auto_submit_true_is_rejected() -> None:
     assert "false" in message
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["shortcut_macos", "shortcut_windows", "shortcut_linux_gui", "shortcut_linux_terminal"],
+)
+@pytest.mark.parametrize(
+    "shortcut",
+    [
+        "cmd+enter",  # the never-submit guarantee, checked at load time
+        "ctrl+return",
+        "cmd+",  # empty token after '+'
+        "notamod+v",  # unknown modifier
+        "ctrl+v!",  # main key is not a single printable char or key name
+        "",  # empty
+    ],
+)
+def test_invalid_paste_shortcut_is_rejected(field: str, shortcut: str) -> None:
+    with pytest.raises(ConfigError) as exc:
+        load_config_from_dict({"paste": {field: shortcut}})
+    assert f"paste.{field}" in str(exc.value)
+
+
+def test_enter_in_override_shortcut_is_rejected() -> None:
+    with pytest.raises(ConfigError) as exc:
+        load_config_from_dict(
+            {
+                "paste": {
+                    "application_overrides": [{"application": "iterm", "shortcut": "cmd+enter"}]
+                }
+            }
+        )
+    assert "shortcut" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "shortcut",
+    [
+        "cmd+v",
+        "ctrl+v",
+        "ctrl+shift+v",
+        "alt+shift+f4",
+        "shift+insert",
+        "v",  # bare main key, no modifiers
+    ],
+)
+def test_valid_paste_shortcut_is_accepted(shortcut: str) -> None:
+    config = load_config_from_dict({"paste": {"shortcut_macos": shortcut}})
+    assert config.paste.shortcut_macos == shortcut
+
+
 def test_paste_defaults_are_safe() -> None:
     # Default multiline policy preserves text (§16 "Preserve multiline text by
     # default"); platform shortcuts have sensible defaults.
