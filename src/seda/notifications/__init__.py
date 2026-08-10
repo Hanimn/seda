@@ -8,6 +8,7 @@ player, fire-and-forget and fully fail-open.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import sys
@@ -299,10 +300,8 @@ class SoundNotifier:
             path = self._SOUNDS_DIR / f"{_EVENT_CUE_NAMES[event]}.wav"
         if path is None:
             return
-        try:
+        with contextlib.suppress(Exception):  # a cue failure never breaks dictation
             self._play(path)
-        except Exception:  # noqa: BLE001 - a cue failure never breaks dictation
-            pass
 
 
 _EVENT_CUE_NAMES: dict[NotificationEvent, str] = {
