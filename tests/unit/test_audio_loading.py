@@ -67,3 +67,25 @@ def test_non_wav_file_raises_audio_error(tmp_path: Path) -> None:
     with pytest.raises(AudioError) as exc:
         load_wav(bogus)
     assert "not a readable" in str(exc.value)
+
+
+def test_over_size_limit_raises_audio_error(make_wav: WavFactory) -> None:
+    """An over-limit file is rejected on its stat size, before decode (#127)."""
+    path = make_wav([0] * 8000)  # 16 KB of PCM
+    with pytest.raises(AudioError) as exc:
+        load_wav(path, max_bytes=1024)
+    message = str(exc.value)
+    assert "limit" in message
+    assert "max_audio_mb" in message
+
+
+def test_within_size_limit_loads(make_wav: WavFactory) -> None:
+    path = make_wav([0] * 8000)
+    audio = load_wav(path, max_bytes=1024 * 1024)
+    assert len(audio.samples) == 8000
+
+
+def test_no_size_limit_loads(make_wav: WavFactory) -> None:
+    path = make_wav([0] * 8000)
+    audio = load_wav(path, max_bytes=None)
+    assert len(audio.samples) == 8000

@@ -537,7 +537,8 @@ def transcribe(
     logger = configure_logging(loaded_config)
 
     try:
-        audio = load_wav(file)
+        cap_mb = loaded_config.transcription.max_audio_mb
+        audio = load_wav(file, max_bytes=None if cap_mb == 0 else cap_mb * 1024 * 1024)
     except SedaError as exc:
         _err(str(exc))
         raise typer.Exit(code=int(ExitCode.AUDIO)) from exc
