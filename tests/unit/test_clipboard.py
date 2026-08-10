@@ -681,3 +681,203 @@ class TestTapShortcut:
         # Cleanup still unwinds everything it pressed (release errors in the
         # unwind itself are swallowed so the original failure wins).
         assert ("release", "CTRL") in ctrl.events
+
+
+# ---------------------------------------------------------------------------
+# Non-text clipboard preservation via the optional snapshot protocol (#147)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSnapshotClipboard(FakeClipboard):
+    """FakeClipboard + the optional snapshot/restore capability (#147)."""
+
+    def __init__(self, initial: str = "") -> None:
+        super().__init__(initial)
+        self.snapshots: list[object] = []
+        self.restored: list[object] = []
+
+    def snapshot(self) -> object:
+        snap = ("snap", self._text)
+        self.snapshots.append(snap)
+        return snap
+
+    def restore(self, snapshot: object) -> None:
+        self.restored.append(snapshot)
+        self._text = snapshot[1]  # type: ignore[index]
+
+
+class TestNonTextRestore:
+    def _inserter(self, cb: ClipboardProvider) -> TextInserter:
+        return TextInserter(
+            clipboard=cb,
+            paste_backend=FakePasteBackend(),
+            shortcut="cmd+v",
+            sleep=lambda _s: None,
+        )
+
+    def test_non_text_prior_restored_via_snapshot(self) -> None:
+        cb = _FakeSnapshotClipboard()
+        cb.set_non_text()  # prior clipboard holds an image
+        result = self._inserter(cb).insert("dictated text")
+        assert result.pasted and result.restored
+        assert len(cb.restored) == 1  # the snapshot was put back
+
+    def test_text_prior_uses_text_path_not_snapshot(self) -> None:
+        cb = _FakeSnapshotClipboard("prior text")
+        result = self._inserter(cb).insert("dictated text")
+        assert result.restored
+        assert cb.restored == []  # snapshot restore NOT used
+        assert cb.read_text() == "prior text"
+
+    def test_snapshot_restore_skipped_when_race_detected(self) -> None:
+        cb = _FakeSnapshotClipboard()
+        cb.set_non_text()
+        inserter = self._inserter(cb)
+        original_write = cb.write_text
+
+        def racing_write(text: str) -> None:
+            original_write(text)
+            cb._text = "user copied something else"
+
+        cb.write_text = racing_write  # type: ignore[method-assign]
+        result = inserter.insert("dictated text")
+        assert result.pasted and not result.restored
+        assert cb.restored == []  # never clobber the user's new clipboard
+
+    def test_snapshot_restore_skipped_when_disabled(self) -> None:
+        cb = _FakeSnapshotClipboard()
+        cb.set_non_text()
+        inserter = TextInserter(
+            clipboard=cb,
+            paste_backend=FakePasteBackend(),
+            shortcut="cmd+v",
+            restore_clipboard=False,
+            sleep=lambda _s: None,
+        )
+        result = inserter.insert("dictated text")
+        assert result.pasted and not result.restored
+        assert cb.restored == []
+
+
+# ---------------------------------------------------------------------------
+# MacOSNativeClipboard — NSPasteboard provider with a faked pasteboard (#147)
+# ---------------------------------------------------------------------------
+
+
+class _FakePasteboardItem:
+    def __init__(self, pairs: list[tuple[str, bytes]]) -> None:
+        self._pairs = dict(pairs)
+        self.set_calls: list[tuple[str, object]] = []
+
+    def types(self) -> list[str]:
+        return list(self._pairs)
+
+    def dataForType_(self, uti: str) -> bytes | None:
+        return self._pairs.get(uti)
+
+    def setData_forType_(self, data: object, uti: str) -> None:
+        self.set_calls.append((uti, data))
+
+
+class _FakePasteboard:
+    """Records NSPasteboard calls; serves canned items."""
+
+    def __init__(
+        self, *, text: str | None = None, items: list[_FakePasteboardItem] | None = None
+    ) -> None:
+        self._text = text
+        self._items = items or []
+        self.cleared = 0
+        self.written_text: list[str] = []
+        self.written_objects: list[list[object]] = []
+
+    def stringForType_(self, _uti: str) -> str | None:
+        return self._text
+
+    def clearContents(self) -> None:
+        self.cleared += 1
+        self._text = None
+        self._items = []
+
+    def setString_forType_(self, text: str, _uti: str) -> None:
+        self.written_text.append(text)
+        self._text = text
+
+    def pasteboardItems(self) -> list[_FakePasteboardItem]:
+        return self._items
+
+    def writeObjects_(self, objects: list[object]) -> None:
+        self.written_objects.append(objects)
+
+
+class TestMacOSNativeClipboard:
+    def _provider(self, pb: _FakePasteboard) -> object:
+        from seda.input.pasteboard_macos import MacOSNativeClipboard
+
+        provider = MacOSNativeClipboard(pasteboard=pb)
+        # Patch the AppKit construction boundaries.
+        provider._new_pasteboard_item = lambda: _FakePasteboardItem([])  # type: ignore[method-assign]
+        provider._to_data = lambda raw: ("data", raw)  # type: ignore[method-assign]
+        return provider
+
+    def test_read_text(self) -> None:
+        pb = _FakePasteboard(text="hello")
+        assert self._provider(pb).read_text() == "hello"  # type: ignore[attr-defined]
+
+    def test_read_text_non_text_returns_none(self) -> None:
+        pb = _FakePasteboard(text=None)
+        assert self._provider(pb).read_text() is None  # type: ignore[attr-defined]
+
+    def test_write_text_clears_then_sets(self) -> None:
+        pb = _FakePasteboard()
+        self._provider(pb).write_text("dictated")  # type: ignore[attr-defined]
+        assert pb.cleared == 1
+        assert pb.written_text == ["dictated"]
+
+    def test_snapshot_captures_all_items_and_types(self) -> None:
+        item = _FakePasteboardItem([("public.png", b"\x89PNG"), ("public.utf8-plain-text", b"hi")])
+        pb = _FakePasteboard(items=[item])
+        snap = self._provider(pb).snapshot()  # type: ignore[attr-defined]
+        assert len(snap.items) == 1
+        assert ("public.png", b"\x89PNG") in snap.items[0]
+
+    def test_restore_writes_items_back(self) -> None:
+        from seda.input.pasteboard_macos import PasteboardSnapshot
+
+        pb = _FakePasteboard()
+        provider = self._provider(pb)
+        snap = PasteboardSnapshot(items=((("public.png", b"\x89PNG"),),))
+        provider.restore(snap)  # type: ignore[attr-defined]
+        assert pb.cleared == 1
+        assert len(pb.written_objects) == 1
+        restored_item = pb.written_objects[0][0]
+        assert restored_item.set_calls == [("public.png", ("data", b"\x89PNG"))]
+
+
+class TestDefaultClipboardSelection:
+    def test_macos_selects_native_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys as _sys
+
+        from seda.input import paste as paste_module
+        from seda.input.pasteboard_macos import MacOSNativeClipboard
+
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        assert isinstance(paste_module._default_clipboard(), MacOSNativeClipboard)
+
+    def test_macos_falls_back_when_native_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys as _sys
+
+        from seda.input import paste as paste_module
+        from seda.input.clipboard import PyperclipClipboard
+
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        monkeypatch.setitem(_sys.modules, "seda.input.pasteboard_macos", None)
+        assert isinstance(paste_module._default_clipboard(), PyperclipClipboard)
+
+    def test_linux_selects_pyperclip(self) -> None:
+        from seda.input import paste as paste_module
+        from seda.input.clipboard import PyperclipClipboard
+
+        assert isinstance(paste_module._default_clipboard(), PyperclipClipboard)
