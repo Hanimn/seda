@@ -876,8 +876,11 @@ class TestDefaultClipboardSelection:
         monkeypatch.setitem(_sys.modules, "seda.input.pasteboard_macos", None)
         assert isinstance(paste_module._default_clipboard(), PyperclipClipboard)
 
-    def test_linux_selects_pyperclip(self) -> None:
+    def test_linux_selects_pyperclip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys as _sys
+
         from seda.input import paste as paste_module
         from seda.input.clipboard import PyperclipClipboard
 
+        monkeypatch.setattr(_sys, "platform", "linux")
         assert isinstance(paste_module._default_clipboard(), PyperclipClipboard)
