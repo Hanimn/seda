@@ -20,6 +20,7 @@ IMPLEMENTATION_PLAN.md §3, §11, §21):
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tomllib
 from ipaddress import ip_address
@@ -273,6 +274,22 @@ class PasteConfig(_Section):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_shortcuts(self) -> PasteConfig:
+        for field_name in (
+            "shortcut_macos",
+            "shortcut_windows",
+            "shortcut_linux_gui",
+            "shortcut_linux_terminal",
+        ):
+            _validate_paste_shortcut(f"paste.{field_name}", getattr(self, field_name))
+        for override in self.application_overrides:
+            _validate_paste_shortcut(
+                f"paste.application_overrides[{override.application!r}].shortcut",
+                override.shortcut,
+            )
+        return self
+
 
 class NotificationsConfig(_Section):
     sound_enabled: bool = True
@@ -393,6 +410,61 @@ def _validate_hotkey(field: str, value: str) -> None:
             )
         if bracketed and len(token) <= 2:
             raise ValueError(f"{field} '{value}': token '{token}' has no key name")
+
+
+# Modifier tokens recognised in paste shortcuts (mirrors
+# ``PynputPasteBackend._MODIFIERS``; bare, unbracketed — ``"cmd+v"`` style).
+_PASTE_MODIFIERS = frozenset(
+    {
+        "cmd",
+        "command",
+        "super",
+        "win",
+        "ctrl",
+        "control",
+        "alt",
+        "option",
+        "shift",
+    }
+)
+
+# Main keys a paste shortcut must never deliver: Seda does not auto-submit
+# (mirrors ``PynputPasteBackend._FORBIDDEN``). Caught here so a dangerous
+# shortcut fails at config load, not at paste time.
+_PASTE_FORBIDDEN_MAIN = frozenset({"enter", "return", "\n", "\r"})
+
+# Identifier-shaped key names (``f5``, ``insert``, ``scroll_lock``) resolve
+# against pynput's ``Key`` at delivery time; config only checks the shape.
+_PASTE_KEY_NAME = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def _validate_paste_shortcut(field: str, value: str) -> None:
+    """Validate a paste shortcut (``"cmd+v"`` style) at config load.
+
+    Strict on the two things the backend cannot meaningfully recover from —
+    unknown modifiers and an Enter/Return main key (the never-submit
+    guarantee) — and on malformed input (empty tokens). Main-key *names* are
+    only shape-checked: the backend does final resolution against pynput's
+    ``Key`` (mirroring :func:`_validate_hotkey`'s lightweight-scope comment).
+    """
+    if not value or not value.strip():
+        raise ValueError(f"{field} must not be empty")
+    tokens = [t.strip().lower() for t in value.split("+")]
+    if any(not t for t in tokens):
+        raise ValueError(f"{field} '{value}' has an empty key between '+' separators")
+    *mods, main = tokens
+    for mod in mods:
+        if mod not in _PASTE_MODIFIERS:
+            raise ValueError(
+                f"{field} '{value}': modifier '{mod}' is not a known modifier "
+                "(cmd/ctrl/alt/shift or their aliases)"
+            )
+    if main in _PASTE_FORBIDDEN_MAIN:
+        raise ValueError(
+            f"{field} '{value}' must never press Enter/Return: Seda does not auto-submit"
+        )
+    if not (len(main) == 1 or _PASTE_KEY_NAME.fullmatch(main)):
+        raise ValueError(f"{field} '{value}': key '{main}' is not a single character or a key name")
 
 
 def _platform_key(platform: str) -> str:
