@@ -193,3 +193,35 @@ class TestMultipleTokens:
         text = "run npm run test in src/app and check NODE_ENV with refreshToken at v2.1.4"
         protected, registry = protect(text)
         assert restore(protected, registry) == text
+
+
+# ---------------------------------------------------------------------------
+# ReDoS hardening — the email pattern must stay linear-time
+# ---------------------------------------------------------------------------
+
+
+class TestEmailPatternPerformance:
+    """Regression: unbounded quantifiers in the email pattern backtracked
+    quadratically on long runs of ``[A-Za-z0-9._-]`` with no ``@`` (a 40 KB
+    dotted run took ~3 s; 80 KB ~15 s). Bounded (RFC 5321) quantifiers keep
+    each start-position scan O(1), so total work is linear."""
+
+    def test_adversarial_dotted_run_completes_fast(self) -> None:
+        import time
+
+        # ~100 KB of dotted characters with no '@' — pathological for the old
+        # pattern (tens of seconds), trivial for the bounded one (~50 ms).
+        text = "src/" + "a." * 50_000 + "py"
+        start = time.perf_counter()
+        protect(text)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 5.0, f"protect() took {elapsed:.2f}s on a dotted run (ReDoS regression)"
+
+    def test_max_length_email_still_protected(self) -> None:
+        # RFC 5321: local parts up to 64 octets are valid and must protect.
+        local = "a" * 64
+        token = f"{local}@example.com"
+        text = f"mail {token} please"
+        protected, registry = protect(text)
+        assert token not in protected
+        assert restore(protected, registry) == text

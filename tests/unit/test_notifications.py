@@ -133,6 +133,27 @@ class TestFanOutNotifier:
         fan.notify(NotificationEvent.RECORDING)
         assert good.events == [NotificationEvent.RECORDING]
 
+    def test_add_during_notify_does_not_corrupt_iteration(self) -> None:
+        """A child that calls add() mid-notify (e.g. the GUI registering its
+        overlay from a notifier callback) must not change the in-flight
+        iteration: the current event goes to exactly the original set, and the
+        new child only sees later events."""
+        a = _RecordingNotifier()
+        late = _RecordingNotifier()
+        fan = FanOutNotifier([a])
+
+        class _RegisteringNotifier:
+            def notify(self, event: NotificationEvent, **kwargs: object) -> None:
+                fan.add(late)
+
+        fan.add(_RegisteringNotifier())
+        fan.notify(NotificationEvent.RECORDING)
+        # The late-registered child sees nothing of the current event...
+        assert late.events == []
+        # ...but is part of the fan-out from the next event on.
+        fan.notify(NotificationEvent.SUCCESS)
+        assert late.events == [NotificationEvent.SUCCESS]
+
     def test_forwards_kwargs(self) -> None:
         seen: list[dict[str, object]] = []
 

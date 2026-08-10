@@ -182,8 +182,10 @@ _PAT_URL = re.compile(
     re.IGNORECASE,
 )
 
-# Email addresses
-_PAT_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Email addresses. Quantifiers are bounded per RFC 5321 (local part ≤ 64
+# octets, domain ≤ 255 octets) — unbounded `+` backtracked quadratically on
+# long dotted runs with no '@' (ReDoS: ~15 s on an 80 KB transcript).
+_PAT_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,255}\.[A-Za-z]{2,}")
 
 # File paths: relative (src/auth/middleware.ts, ../config/x.toml) or absolute (/etc/hosts)
 _PAT_PATH = re.compile(

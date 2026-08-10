@@ -69,6 +69,17 @@ def test_non_wav_file_raises_audio_error(tmp_path: Path) -> None:
     assert "not a readable" in str(exc.value)
 
 
+def test_truncated_mid_frame_wav_raises_audio_error(make_wav: WavFactory) -> None:
+    """A WAV truncated mid-frame opens fine but breaks the numpy decode —
+    that must surface as a clean AudioError, not a raw ValueError traceback."""
+    path = make_wav(list(range(200)), channels=2)
+    data = path.read_bytes()
+    path.write_bytes(data[:-3])  # cut the data chunk mid-frame
+    with pytest.raises(AudioError) as exc:
+        load_wav(path)
+    assert "not a readable" in str(exc.value)
+
+
 def test_over_size_limit_raises_audio_error(make_wav: WavFactory) -> None:
     """An over-limit file is rejected on its stat size, before decode (#127)."""
     path = make_wav([0] * 8000)  # 16 KB of PCM

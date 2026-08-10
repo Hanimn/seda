@@ -152,6 +152,30 @@ class PasteBackend(Protocol):
         ...
 
 
+def _tap_shortcut(controller: object, modifiers: list[object], main_key: object) -> None:
+    """Press *modifiers* + *main_key* on *controller*, then release everything.
+
+    Whatever was successfully pressed is released in reverse order **even when
+    a press/release raises** — a failure mid-sequence must never leave a
+    modifier held down system-wide (stuck-modifier guard). Release errors in
+    the cleanup unwind itself are swallowed so the original failure wins.
+    Separated from :meth:`PynputPasteBackend.send_paste` so the guarantee is
+    testable without importing pynput (headless CI).
+    """
+    pressed: list[object] = []
+    try:
+        for key in [*modifiers, main_key]:
+            controller.press(key)  # type: ignore[attr-defined]
+            pressed.append(key)
+        controller.release(main_key)  # type: ignore[attr-defined]
+        pressed.pop()
+    finally:
+        while pressed:
+            key = pressed.pop()
+            with contextlib.suppress(Exception):
+                controller.release(key)  # type: ignore[attr-defined]
+
+
 class TypeBackend(Protocol):
     """Types text directly as keystrokes at the focused cursor."""
 
@@ -442,12 +466,7 @@ class PynputPasteBackend:
         resolved_main = self._resolve_key(keyboard, main_key)
 
         try:
-            for mod in resolved_mods:
-                controller.press(mod)  # type: ignore[attr-defined]
-            controller.press(resolved_main)  # type: ignore[attr-defined]
-            controller.release(resolved_main)  # type: ignore[attr-defined]
-            for mod in reversed(resolved_mods):
-                controller.release(mod)  # type: ignore[attr-defined]
+            _tap_shortcut(controller, resolved_mods, resolved_main)
         except Exception as exc:  # noqa: BLE001 - surfaced as a clean PasteError
             raise PasteError(f"could not deliver paste shortcut: {exc}") from exc
 

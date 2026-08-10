@@ -908,3 +908,139 @@ def test_gui_on_hotkey_captured_skips_persist_when_swap_not_applied(
     # Config on disk is UNCHANGED (no push_to_talk written).
     persisted = load_config(cfg_path)
     assert persisted.hotkeys.push_to_talk == ""
+
+
+# ---------------------------------------------------------------------------
+# python -m seda smoke path (#125)
+# ---------------------------------------------------------------------------
+
+
+def test_main_module_help_exits_zero() -> None:
+    """The ``python -m seda`` alias must boot the CLI (covers __main__.py)."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "seda", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0
+    assert "Usage" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# devices / test-mic — hardware commands with faked boundaries (#125)
+# ---------------------------------------------------------------------------
+
+
+def _fake_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    from seda.audio import devices as devices_module
+    from seda.audio.devices import DeviceInfo
+
+    fake = [
+        DeviceInfo(
+            index=0,
+            name="Built-in Microphone",
+            input_channels=2,
+            default_sample_rate=48000.0,
+            is_default=True,
+        ),
+        DeviceInfo(
+            index=1, name="USB Mic", input_channels=1, default_sample_rate=16000.0, is_default=False
+        ),
+    ]
+    monkeypatch.setattr(devices_module, "list_devices", lambda: fake)
+
+
+def test_devices_plain_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_devices(monkeypatch)
+    result = runner.invoke(app, ["devices"])
+    assert result.exit_code == 0
+    assert "Built-in Microphone" in result.stdout
+    assert "(default)" in result.stdout
+    assert "USB Mic" in result.stdout
+
+
+def test_devices_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    _fake_devices(monkeypatch)
+    result = runner.invoke(app, ["devices", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload[0]["name"] == "Built-in Microphone"
+    assert payload[0]["default"] is True
+    assert payload[1]["index"] == 1
+
+
+def test_devices_error_exits_with_audio_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    from seda.audio import devices as devices_module
+    from seda.errors import AudioError
+
+    def _boom() -> list[object]:
+        raise AudioError("sounddevice is not available: no PortAudio")
+
+    monkeypatch.setattr(devices_module, "list_devices", _boom)
+    result = runner.invoke(app, ["devices"])
+    assert result.exit_code == 3
+    assert "PortAudio" in result.stderr
+
+
+class _FakeRecorder:
+    """Stands in for SounddeviceRecorder: no mic, instant, deterministic."""
+
+    def __init__(self, _cfg: object, *, fail: Exception | None = None) -> None:
+        self._fail = fail
+
+    def start(self) -> None:
+        if self._fail is not None:
+            raise self._fail
+
+    def stop(self) -> object:
+        import numpy as np
+
+        from seda.audio.recorder import RecordedAudio
+
+        # 0.5 s of a loud-ish sine-ish wave: speech detected, not clipping.
+        samples = np.sin(np.linspace(0, 20, 8000)).astype(np.float32) * 0.5
+        return RecordedAudio(samples=samples, sample_rate=16000, overflow_count=0)
+
+
+def _patch_recorder(monkeypatch: pytest.MonkeyPatch, *, fail: Exception | None = None) -> None:
+    from seda.audio import recorder as recorder_module
+
+    monkeypatch.setattr(
+        recorder_module, "SounddeviceRecorder", lambda cfg: _FakeRecorder(cfg, fail=fail)
+    )
+
+
+def test_test_mic_reports_levels(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_recorder(monkeypatch)
+    result = runner.invoke(app, ["test-mic", "--duration", "0"])
+    assert result.exit_code == 0
+    for line in ("Duration", "Peak", "RMS", "Speech"):
+        assert line in result.stdout
+    assert "CLIPPING" not in result.stdout
+
+
+def test_test_mic_save_writes_wav(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import wave
+
+    _patch_recorder(monkeypatch)
+    target = tmp_path / "sample.wav"
+    result = runner.invoke(app, ["test-mic", "--duration", "0", "--save", str(target)])
+    assert result.exit_code == 0
+    with wave.open(str(target), "rb") as wf:
+        assert wf.getnchannels() == 1
+        assert wf.getsampwidth() == 2
+        assert wf.getframerate() == 16000
+        assert wf.getnframes() == 8000
+
+
+def test_test_mic_failure_exits_with_audio_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_recorder(monkeypatch, fail=RuntimeError("mic boom"))
+    result = runner.invoke(app, ["test-mic", "--duration", "0"])
+    assert result.exit_code == 3
+    assert "mic boom" in result.stderr
