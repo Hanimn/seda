@@ -35,6 +35,14 @@ push_to_talk_linux = "<ctrl>+<alt>+space"
 toggle_mode_macos = "<ctrl>+<shift>+m"
 toggle_mode_windows = "<ctrl>+<alt>+m"
 toggle_mode_linux = "<ctrl>+<alt>+m"
+# Dedicated copy-only chord (#148): hold to record, release to transcribe
+# straight to the clipboard WITHOUT pasting. Empty everywhere = disabled.
+# copy_only is the optional all-platform override; the per-platform fields
+# apply when it is empty.
+copy_only = ""
+copy_only_macos = ""
+copy_only_windows = ""
+copy_only_linux = ""
 
 [audio]
 device = ""                      # "" = system default input device

@@ -22,7 +22,12 @@ import threading
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from seda.config import HotkeysConfig, select_push_to_talk, select_toggle_mode
+from seda.config import (
+    HotkeysConfig,
+    select_copy_only,
+    select_push_to_talk,
+    select_toggle_mode,
+)
 from seda.errors import HotkeyError
 
 
@@ -35,6 +40,8 @@ class HotkeyProvider(Protocol):
         on_release: Callable[[], None],
         on_cancel: Callable[[], None],
         on_toggle_mode: Callable[[], None] = lambda: None,
+        on_copy_only_press: Callable[[], None] = lambda: None,
+        on_copy_only_release: Callable[[], None] = lambda: None,
     ) -> None: ...
 
     def stop(self) -> None: ...
@@ -437,18 +444,33 @@ class PynputHotkeyProvider:
         # The mode-cycle chord (#109); registered as a key-down GlobalHotKey
         # alongside cancel. Like cancel, it is not suppressed from the focused app.
         self._toggle_key = select_toggle_mode(config)
+        # The dedicated copy-only chord (#148); empty = disabled. Same PTT
+        # hold/release semantics, but the controller copies instead of pasting.
+        self._copy_only_key = select_copy_only(config)
+        self._copy_only_trigger = _trigger_token(self._copy_only_key) if self._copy_only_key else ""
+        self._copy_only_trigger_vk = _trigger_vk(self._copy_only_trigger)
+        self._copy_only_chord_keys = (
+            _chord_key_names(self._copy_only_key) if self._copy_only_key else frozenset()
+        )
+        self._copy_only_chord_modifiers = (
+            _chord_modifier_names(self._copy_only_key) if self._copy_only_key else frozenset()
+        )
         # Suppress the chord keys (issues #11/#12) and the cancel key (issue #13)
-        # from leaking to the focused app while the chord is engaged.
+        # from leaking to the focused app while a chord is engaged. The copy-only
+        # chord's keys join the suppressed set so it gets the same treatment (#148).
         self._suppressor = _ChordSuppressor(
-            self._chord_keys,
-            self._chord_modifiers,
+            self._chord_keys | self._copy_only_chord_keys,
+            self._chord_modifiers | self._copy_only_chord_modifiers,
             _chord_key_names(self._cancel_key),
         )
         self._on_press_cb: Callable[[], None] = lambda: None
         self._on_release_cb: Callable[[], None] = lambda: None
         self._on_cancel_cb: Callable[[], None] = lambda: None
         self._on_toggle_mode_cb: Callable[[], None] = lambda: None
+        self._on_copy_only_press_cb: Callable[[], None] = lambda: None
+        self._on_copy_only_release_cb: Callable[[], None] = lambda: None
         self._pressed = False
+        self._copy_only_pressed = False
         self._lock = threading.Lock()
         self._listener: Any = None
         self._cancel_listener: Any = None
@@ -458,6 +480,7 @@ class PynputHotkeyProvider:
         # re-enter pynput's keycode_context / Carbon TIS init, which crashes on a
         # second call on macOS (issue #89). None until start().
         self._ptt_hotkey: Any = None
+        self._copy_only_hotkey: Any = None
 
     # ------------------------------------------------------------------
     # HotkeyProvider interface
@@ -469,6 +492,8 @@ class PynputHotkeyProvider:
         on_release: Callable[[], None],
         on_cancel: Callable[[], None],
         on_toggle_mode: Callable[[], None] = lambda: None,
+        on_copy_only_press: Callable[[], None] = lambda: None,
+        on_copy_only_release: Callable[[], None] = lambda: None,
     ) -> None:
         """Register hotkeys and start listening.
 
@@ -478,6 +503,8 @@ class PynputHotkeyProvider:
         self._on_release_cb = on_release
         self._on_cancel_cb = on_cancel
         self._on_toggle_mode_cb = on_toggle_mode
+        self._on_copy_only_press_cb = on_copy_only_press
+        self._on_copy_only_release_cb = on_copy_only_release
 
         try:
             from pynput import keyboard
@@ -490,6 +517,11 @@ class PynputHotkeyProvider:
                 keyboard.HotKey.parse(ptt_normalized),
                 self._on_ptt_press,
             )
+            if self._copy_only_key:
+                self._copy_only_hotkey = keyboard.HotKey(
+                    keyboard.HotKey.parse(_normalize_hotkey(self._copy_only_key)),
+                    self._on_copy_only_press,
+                )
 
             # keyboard.Listener fires on every key event; we feed canonical
             # key objects into the HotKey so it can track modifier state. The
@@ -499,10 +531,21 @@ class PynputHotkeyProvider:
             def _on_key_press(key: Any) -> None:
                 with contextlib.suppress(Exception):
                     self._ptt_hotkey.press(listener.canonical(key))
+                if self._copy_only_hotkey is not None:
+                    with contextlib.suppress(Exception):
+                        self._copy_only_hotkey.press(listener.canonical(key))
 
             def _on_key_release(key: Any) -> None:
                 with contextlib.suppress(Exception):
                     self._ptt_hotkey.release(listener.canonical(key))
+                if self._copy_only_hotkey is not None:
+                    with contextlib.suppress(Exception):
+                        self._copy_only_hotkey.release(listener.canonical(key))
+                    if _released_key_matches(
+                        key, self._copy_only_trigger, self._copy_only_trigger_vk
+                    ):
+                        self._on_copy_only_release()
+                        return
                 # Only releasing the trigger key ends a hold. Releasing a
                 # modifier (or any other key) while the chord is held must NOT
                 # stop the recording — otherwise multi-key chords stop almost
@@ -596,8 +639,8 @@ class PynputHotkeyProvider:
             self._chord_keys = _chord_key_names(new_chord)
             self._chord_modifiers = _chord_modifier_names(new_chord)
             self._suppressor = _ChordSuppressor(
-                self._chord_keys,
-                self._chord_modifiers,
+                self._chord_keys | self._copy_only_chord_keys,
+                self._chord_modifiers | self._copy_only_chord_modifiers,
                 _chord_key_names(self._cancel_key),
             )
             self._ptt_hotkey = new_hotkey
@@ -649,6 +692,22 @@ class PynputHotkeyProvider:
                 return
             self._pressed = False
         self._on_release_cb()
+
+    def _on_copy_only_press(self) -> None:
+        """Fire on_copy_only_press on the first press only (#148)."""
+        with self._lock:
+            if self._copy_only_pressed:
+                return
+            self._copy_only_pressed = True
+        self._on_copy_only_press_cb()
+
+    def _on_copy_only_release(self) -> None:
+        """Fire on_copy_only_release; drop spurious releases (#148)."""
+        with self._lock:
+            if not self._copy_only_pressed:
+                return
+            self._copy_only_pressed = False
+        self._on_copy_only_release_cb()
 
     def _on_cancel(self) -> None:
         self._on_cancel_cb()

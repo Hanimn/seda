@@ -619,3 +619,39 @@ class TestFormatChordDisplay:
         # An exotic trigger we don't special-case is shown verbatim (title-cased),
         # not mangled or dropped.
         assert format_chord_display("<ctrl>+home") == "⌃Home"
+
+
+class TestCopyOnlyChordProvider:
+    """PynputHotkeyProvider wiring for the copy-only chord (#148)."""
+
+    def test_disabled_by_default(self) -> None:
+        from seda.config import HotkeysConfig
+        from seda.input.hotkeys import PynputHotkeyProvider
+
+        provider = PynputHotkeyProvider(HotkeysConfig())
+        assert provider._copy_only_key == ""
+        assert provider._copy_only_chord_keys == frozenset()
+
+    def test_copy_chord_keys_join_the_suppressed_set(self) -> None:
+        from seda.config import HotkeysConfig
+        from seda.input.hotkeys import PynputHotkeyProvider, _chord_key_names
+
+        provider = PynputHotkeyProvider(HotkeysConfig(copy_only="<ctrl>+<alt>+c"))
+        assert provider._copy_only_key == "<ctrl>+<alt>+c"
+        assert provider._copy_only_trigger == "c"
+        # The copy chord's keys are suppressed on macOS like the PTT chord's.
+        assert _chord_key_names("<ctrl>+<alt>+c") <= provider._suppressor._chord_keys
+
+    def test_press_release_guards(self) -> None:
+        from seda.config import HotkeysConfig
+        from seda.input.hotkeys import PynputHotkeyProvider
+
+        provider = PynputHotkeyProvider(HotkeysConfig(copy_only="<ctrl>+<alt>+c"))
+        calls: list[str] = []
+        provider._on_copy_only_press_cb = lambda: calls.append("press")
+        provider._on_copy_only_release_cb = lambda: calls.append("release")
+        provider._on_copy_only_release()  # spurious release dropped
+        provider._on_copy_only_press()
+        provider._on_copy_only_press()  # auto-repeat dropped
+        provider._on_copy_only_release()
+        assert calls == ["press", "release"]

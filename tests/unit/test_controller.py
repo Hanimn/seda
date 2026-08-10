@@ -33,6 +33,8 @@ class FakeHotkeyProvider:
         self.on_release: Callable[[], None] = lambda: None
         self.on_cancel: Callable[[], None] = lambda: None
         self.on_toggle_mode: Callable[[], None] = lambda: None
+        self.on_copy_only_press: Callable[[], None] = lambda: None
+        self.on_copy_only_release: Callable[[], None] = lambda: None
         self.stopped = False
         self.start_count = 0
         self.chord: str | None = None
@@ -44,11 +46,15 @@ class FakeHotkeyProvider:
         on_release: Callable[[], None],
         on_cancel: Callable[[], None],
         on_toggle_mode: Callable[[], None] = lambda: None,
+        on_copy_only_press: Callable[[], None] = lambda: None,
+        on_copy_only_release: Callable[[], None] = lambda: None,
     ) -> None:
         self.on_press = on_press
         self.on_release = on_release
         self.on_cancel = on_cancel
         self.on_toggle_mode = on_toggle_mode
+        self.on_copy_only_press = on_copy_only_press
+        self.on_copy_only_release = on_copy_only_release
         self.start_count += 1
         # A restart after a stop clears the stopped flag (models a live listener).
         self.stopped = False
@@ -1032,3 +1038,44 @@ class TestTranscriptLoggingGate:
         cfg = load_config_from_dict({"app": {"log_transcripts": False}})
         records = self._run_cycle(cfg, text="dictate this secret sentence")
         assert not any("dictate this secret sentence" in message for message in records)
+
+
+class TestCopyOnlyChord:
+    """The dedicated copy-only chord (#148): PTT semantics, copy-only insert."""
+
+    def _cycle(self, ctrl: AppController, hotkeys: FakeHotkeyProvider) -> None:
+        assert _wait_state(ctrl, AppState.IDLE)
+        hotkeys.on_copy_only_press()
+        assert _wait_state(ctrl, AppState.RECORDING)
+        hotkeys.on_copy_only_release()
+        assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+
+    def test_copy_only_cycle_copies_without_pasting(self) -> None:
+        ctrl, hotkeys, _ = _make_controller()
+        t = _run_in_thread(ctrl)
+        try:
+            self._cycle(ctrl, hotkeys)
+            inserter = ctrl._inserter
+            assert isinstance(inserter, _RecordingInserter)
+            assert inserter.copy_only_calls == [True]
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)
+
+    def test_ptt_cycle_after_copy_only_pastes_normally(self) -> None:
+        """The per-cycle flag resets: a normal PTT cycle pastes (#148)."""
+        ctrl, hotkeys, _ = _make_controller()
+        t = _run_in_thread(ctrl)
+        try:
+            self._cycle(ctrl, hotkeys)
+            assert _wait_state(ctrl, AppState.IDLE)
+            hotkeys.on_press()
+            assert _wait_state(ctrl, AppState.RECORDING)
+            hotkeys.on_release()
+            assert _wait_state(ctrl, AppState.IDLE, timeout=5.0)
+            inserter = ctrl._inserter
+            assert isinstance(inserter, _RecordingInserter)
+            assert inserter.copy_only_calls == [True, False]
+        finally:
+            ctrl.shutdown()
+            t.join(timeout=3.0)

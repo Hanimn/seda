@@ -643,3 +643,27 @@ def test_max_audio_mb_default_and_override() -> None:
 def test_max_audio_mb_negative_is_rejected() -> None:
     with pytest.raises(ConfigError):
         load_config_from_dict({"transcription": {"max_audio_mb": -1}})
+
+
+def test_copy_only_hotkey_default_is_disabled() -> None:
+    from seda.config import select_copy_only
+
+    config = load_config_from_dict({})
+    assert select_copy_only(config.hotkeys) == ""
+
+
+def test_copy_only_hotkey_platform_default_and_override() -> None:
+    from seda.config import select_copy_only
+
+    config = load_config_from_dict({"hotkeys": {"copy_only_macos": "<cmd>+<shift>+c"}})
+    assert select_copy_only(config.hotkeys, platform="darwin") == "<cmd>+<shift>+c"
+    assert select_copy_only(config.hotkeys, platform="linux") == ""
+    override = load_config_from_dict({"hotkeys": {"copy_only": "<ctrl>+<alt>+c"}})
+    assert select_copy_only(override.hotkeys, platform="darwin") == "<ctrl>+<alt>+c"
+    assert select_copy_only(override.hotkeys, platform="linux") == "<ctrl>+<alt>+c"
+
+
+def test_copy_only_hotkey_invalid_is_rejected() -> None:
+    with pytest.raises(ConfigError) as exc:
+        load_config_from_dict({"hotkeys": {"copy_only": "<ctrl>+notakey"}})
+    assert "hotkeys.copy_only" in str(exc.value)
