@@ -8,6 +8,12 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-10
+
+Second release. The macOS menu-bar app and Windows HUD epics, the
+advertised-config wiring map, and a hardening pass from a deep quality audit
+(ReDoS, paste-key safety, WAV robustness, config validation, debug knobs).
+
 ### Changed
 
 - **Renamed the project from "Local Flow" to Seda** (صدا — Persian for "voice").
@@ -69,6 +75,11 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - Clear startup warning when the macOS Accessibility permission is missing (#33).
 - ADRs 0001–0011 and the supporting research notes and implementation specs
   (overlay, HUD lifecycle, Windows host, menu-bar toolkit).
+- `app.log_transcripts` and `app.retain_debug_audio` now take effect (#126):
+  transcript logging gates DEBUG records; debug audio writes timestamped,
+  owner-only (0600) WAVs via the new `seda.audio.dump`.
+- `transcription.max_audio_mb` guards `seda transcribe` input size — over-limit
+  files are rejected on their stat size before being read into memory (#127).
 
 ### Fixed
 
@@ -79,6 +90,16 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   Carbon Text-Input-Source init (#44) on the main thread.
 - Overlay fail-open boundary and startup/shutdown race (#47).
 - ObjC class-name collision in the status-item runner (#90).
+- **Quadratic ReDoS in the email token-protection pattern** — bounded per
+  RFC 5321; 230× faster on adversarial dotted input (#120).
+- Paste-shortcut failure could leave modifier keys held system-wide; every
+  pressed key is now released in a `finally` unwind (#121).
+- Mid-frame-truncated WAVs crashed `seda transcribe` with a raw traceback;
+  they now raise a clean `AudioError` with exit code 3 (#122).
+- Paste shortcuts are validated at config load; Enter/Return as the main key is
+  rejected up front, naming the never-submit guarantee (#123).
+- `FanOutNotifier.notify` iterates a snapshot, so a mid-flight `add()` can no
+  longer inject a notifier into the in-flight event (#124).
 
 ---
 
@@ -178,4 +199,5 @@ Found during on-device (§39) verification on macOS:
 
 ---
 
+[0.2.0]: https://github.com/Hanimn/seda/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Hanimn/seda/releases/tag/v0.1.0
